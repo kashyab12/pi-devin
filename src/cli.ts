@@ -1,16 +1,10 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-
-const ZED_DEVIN =
-  join(
-    homedir(),
-    "Library/Application Support/Zed/external_agents/registry/devin",
-  );
 
 const KNOWN_BINS = [
   process.env.DEVIN_CLI,
@@ -23,26 +17,6 @@ const KNOWN_BINS = [
 
 let cachedBin: string | null | undefined;
 
-function newestZedDevin(): string | null {
-  try {
-    if (!existsSync(ZED_DEVIN)) return null;
-    const versions = readdirSync(ZED_DEVIN)
-      .map((name) => {
-        const bin = join(ZED_DEVIN, name, "bin/devin");
-        try {
-          return { bin, mtime: statSync(bin).mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-      .filter((row): row is { bin: string; mtime: number } => Boolean(row))
-      .sort((a, b) => b.mtime - a.mtime);
-    return versions[0]?.bin ?? null;
-  } catch {
-    return null;
-  }
-}
-
 export function findDevinBin(): string | null {
   if (cachedBin !== undefined) return cachedBin;
   for (const bin of KNOWN_BINS) {
@@ -50,11 +24,6 @@ export function findDevinBin(): string | null {
       cachedBin = bin;
       return bin;
     }
-  }
-  const zed = newestZedDevin();
-  if (zed) {
-    cachedBin = zed;
-    return zed;
   }
   cachedBin = null;
   return null;
@@ -87,7 +56,7 @@ export async function runDevin(
   const bin = await whichDevin();
   if (!bin) {
     throw new Error(
-      "Devin CLI not found. Install Devin, or set DEVIN_CLI to the `devin` binary (Zed ACP registry and Devin.app are also checked).",
+      "Devin CLI not found. Install the Devin CLI, or set DEVIN_CLI to the `devin` binary.",
     );
   }
 

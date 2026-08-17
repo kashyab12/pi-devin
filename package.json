@@ -1,6 +1,6 @@
 {
   "name": "pi-devin",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi provider for Devin Local models. Auth and catalog come from the local Devin CLI; Pi stays the harness.",
   "type": "module",
   "keywords": [

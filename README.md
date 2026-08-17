@@ -30,22 +30,22 @@ The CLI binary is resolved in this order:
 
 ## Install
 
-Local (this repo):
+From git:
 
 ```bash
-pi install /Users/kashyab/pi-devin
+pi install git:github.com/kashyab12/pi-devin
 ```
 
-After you publish to npm:
+After npm publish:
 
 ```bash
 pi install npm:pi-devin
 ```
 
-From git:
+Local checkout:
 
 ```bash
-pi install git:github.com/<you>/pi-devin
+pi install /Users/kashyab/pi-devin
 ```
 
 Restart Pi or run `/reload`.

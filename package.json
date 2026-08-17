@@ -14,7 +14,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kashyab/pi-devin.git"
+    "url": "git+https://github.com/kashyab12/pi-devin.git"
   },
   "pi": {
     "extensions": [

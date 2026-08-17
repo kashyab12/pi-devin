@@ -3,6 +3,7 @@ import type { Api, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendi
 import { authStatus, loginWithCli, readCredentials } from "../src/credentials.js";
 import { whichDevin, devinVersion } from "../src/cli.js";
 import { FALLBACK_MODELS, loadCliCatalog, modelsFromCatalog } from "../src/models.js";
+import { CLIENT_IDE, CLIENT_VERSION } from "../src/metadata.js";
 import { streamDevin } from "../src/stream.js";
 
 const PROVIDER_ID = "devin";
@@ -86,7 +87,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       ctx.ui.notify(
         [
           bin ? `CLI: ${bin}` : "CLI: not found",
-          version ? `Version: ${version}` : "Version: unknown",
+          version ? `CLI version: ${version}` : "CLI version: unknown",
+          `Client identity: ${CLIENT_IDE} ${CLIENT_VERSION}`,
           status.loggedIn ? "Auth: signed in via Devin CLI" : "Auth: not signed in. Run /login devin or `devin auth login`",
         ].join("\n"),
         status.loggedIn && bin ? "info" : "warning",

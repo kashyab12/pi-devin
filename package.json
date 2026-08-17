@@ -1,0 +1,45 @@
+{
+  "name": "pi-devin",
+  "version": "0.1.0",
+  "description": "Pi provider for Devin Local models. Auth and catalog come from the local Devin CLI; Pi stays the harness.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "devin",
+    "cognition",
+    "custom-provider"
+  ],
+  "author": "Kashyab Ambarani",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kashyab/pi-devin.git"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "files": [
+    "extensions/",
+    "src/",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

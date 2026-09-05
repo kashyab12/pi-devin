@@ -30,15 +30,19 @@ const THINKING_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max
 function parseCost(summary?: string): ProviderModelConfig["cost"] {
   const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   if (!summary) return empty;
-  const input = summary.match(/\$([0-9.]+)\s*\/\s*MTok In/i);
-  const output = summary.match(/\$([0-9.]+)\s*\/\s*MTok Out/i);
-  const inCost = input ? Number(input[1]) : 0;
-  const outCost = output ? Number(output[1]) : 0;
+
+  const amount = (label: string): number => {
+    const match = summary.match(new RegExp(String.raw`\$([0-9.]+)\s*/\s*(?:1M|MTok)\s*${label}\b`, "i"));
+    return match ? Number(match[1]) : 0;
+  };
+  const input = amount("Input") || amount("In");
+  const legacy = /\/\s*MTok In\b/i.test(summary);
   return {
-    input: inCost,
-    output: outCost,
-    cacheRead: Number((inCost * 0.1).toFixed(4)),
-    cacheWrite: Number((inCost * 1.25).toFixed(4)),
+    input,
+    output: amount("Output") || amount("Out"),
+    cacheRead: legacy ? Number((input * 0.1).toFixed(4)) : amount("Cached input"),
+    // The current CLI summary does not list cache-write pricing.
+    cacheWrite: legacy ? Number((input * 1.25).toFixed(4)) : 0,
   };
 }
 

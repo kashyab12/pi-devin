@@ -30,6 +30,85 @@ const SOURCE_BY_ROLE: Record<string, number> = {
   tool: 4,
 };
 
+/**
+ * Tolerant parser for a tool-call argument JSON that is still streaming.
+ *
+ * `JSON.parse` throws until the final delta closes the document, which would
+ * leave `toolCall.arguments` empty for the entire stream. Pi's TUI reads
+ * `content.arguments` on every `toolcall_delta` to render the call
+ * incrementally (e.g. a `write` file body growing live), so empty arguments
+ * mean the user only sees the tool header until the call completes.
+ *
+ * Strategy: try a strict parse first; otherwise repair the incomplete tail by
+ * closing an unterminated string and any open arrays/objects, then parse the
+ * repaired candidate. Partially-received fields (like a growing `content`
+ * string) become visible while still streaming.
+ */
+function parsePartialToolArguments(partialJson: string): Record<string, unknown> {
+  if (!partialJson || partialJson.trim() === "") return {};
+  try {
+    const value = JSON.parse(partialJson);
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  } catch {
+    // fall through to tolerant repair
+  }
+
+  // Close an unterminated string (accounting for escape sequences).
+  let candidate = partialJson;
+  let inString = false;
+  let escaped = false;
+  for (const ch of candidate) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') inString = !inString;
+  }
+  if (escaped) candidate = candidate.slice(0, -1); // drop a trailing lone backslash
+  if (inString) candidate += '"';
+
+  // Drop a trailing comma or a dangling `"key":` before we close the object.
+  candidate = candidate.replace(/,\s*$/, "").replace(/:\s*$/, ':""');
+  if (inString) candidate = candidate.replace(/,\s*"[^"]*"\s*:\s*"$/, "");
+
+  // Close any open objects/arrays, innermost last.
+  const stack: string[] = [];
+  inString = false;
+  escaped = false;
+  for (const ch of candidate) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "{" || ch === "[") stack.push(ch);
+    else if (ch === "}" || ch === "]") stack.pop();
+  }
+  while (stack.length > 0) {
+    const open = stack.pop();
+    candidate += open === "{" ? "}" : "]";
+  }
+
+  try {
+    const value = JSON.parse(candidate);
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
 export type CloudChatEvent =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string }
@@ -455,11 +534,7 @@ export function streamDevin(
       if (toolIndex < 0) return;
       const block = output.content[toolIndex];
       if (block.type === "toolCall") {
-        try {
-          block.arguments = JSON.parse(partialJson);
-        } catch {
-          // keep last parsed object
-        }
+        block.arguments = parsePartialToolArguments(partialJson);
         stream.push({
           type: "toolcall_end",
           contentIndex: toolIndex,
@@ -528,11 +603,7 @@ export function streamDevin(
           partialJson += event.argsDelta;
           const block = output.content[toolIndex];
           if (block.type === "toolCall") {
-            try {
-              block.arguments = JSON.parse(partialJson);
-            } catch {
-              // incomplete json
-            }
+            block.arguments = parsePartialToolArguments(partialJson);
           }
           stream.push({ type: "toolcall_delta", contentIndex: toolIndex, delta: event.argsDelta, partial: output });
         } else if (event.kind === "finish") {

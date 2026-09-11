@@ -542,12 +542,21 @@ export function streamDevin(
           output.stopReason =
             event.reason === "tool_calls" ? "toolUse" : event.reason === "length" ? "length" : "stop";
         } else if (event.kind === "usage") {
-          output.usage.input = event.promptTokens ?? 0;
-          output.usage.output = event.completionTokens ?? 0;
-          output.usage.cacheRead = event.cachedInputTokens ?? 0;
-          output.usage.cacheWrite = event.cacheCreationInputTokens ?? 0;
-          output.usage.totalTokens = event.totalTokens ?? output.usage.input + output.usage.output;
-          calculateCost(model, output.usage);
+          // Ignore empty usage frames: a zeroed event would reset context tracking
+          // and make the UI fall back to a chars/4 estimate that excludes the
+          // system prompt and tools.
+          const total = (event.promptTokens ?? 0) + (event.completionTokens ?? 0)
+            + (event.cachedInputTokens ?? 0) + (event.cacheCreationInputTokens ?? 0);
+          if (total > 0) {
+            output.usage.input = event.promptTokens ?? 0;
+            output.usage.output = event.completionTokens ?? 0;
+            output.usage.cacheRead = event.cachedInputTokens ?? 0;
+            output.usage.cacheWrite = event.cacheCreationInputTokens ?? 0;
+            // Devin reports input_tokens excluding cached tokens; pi's context
+            // tracker needs the full prompt size, so sum everything here.
+            output.usage.totalTokens = total;
+            calculateCost(model, output.usage);
+          }
         }
       }
 

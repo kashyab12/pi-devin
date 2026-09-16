@@ -13,6 +13,7 @@ import {
 import { mapContextToChat, type ChatHistoryItem, type ContentPart, type ToolDef } from "./context-map.js";
 import { getCachedUserJwt } from "./jwt.js";
 import { buildMetadata } from "./metadata.js";
+import { calculateUsageTotal } from "./usage.js";
 import { resolveModelUid } from "./models.js";
 import {
   encodeFixed64Field,
@@ -249,7 +250,15 @@ function decodeUsage(buf: Buffer): CloudChatEvent | null {
     kind: "usage",
     promptTokens,
     completionTokens,
-    totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0),
+    // Cache tokens are part of the context even though they are reported as
+    // separate usage metrics. Keep totalTokens consistent with Pi's context
+    // accounting, which uses the complete input/output/cache sum.
+    totalTokens: calculateUsageTotal({
+      promptTokens,
+      completionTokens,
+      cachedInputTokens,
+      cacheCreationInputTokens,
+    }),
     cachedInputTokens,
     cacheCreationInputTokens,
   };
@@ -546,7 +555,7 @@ export function streamDevin(
           output.usage.output = event.completionTokens ?? 0;
           output.usage.cacheRead = event.cachedInputTokens ?? 0;
           output.usage.cacheWrite = event.cacheCreationInputTokens ?? 0;
-          output.usage.totalTokens = event.totalTokens ?? output.usage.input + output.usage.output;
+          output.usage.totalTokens = calculateUsageTotal(event);
           calculateCost(model, output.usage);
         }
       }

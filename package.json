@@ -29,7 +29,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/usage.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -37,6 +38,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.2"
   },
   "engines": {

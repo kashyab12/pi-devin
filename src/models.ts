@@ -1,6 +1,6 @@
 import type { ThinkingLevelMap } from "@earendil-works/pi-ai";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import { runDevin } from "./cli.js";
+import { runDevin } from "./cli.ts";
 
 export interface DevinVariant {
   model_uid: string;

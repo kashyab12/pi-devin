@@ -17,15 +17,20 @@ Those models are available through the local Devin CLI. This package uses that C
 ## Requirements
 
 - Pi Coding Agent 0.86+
-- A signed-in [Devin CLI](https://docs.devin.ai/cli) (`devin auth status`)
 - Node 22.19+ (required by Pi 0.86)
+- A signed-in [Devin CLI](https://docs.devin.ai/cli) (`devin auth status`)
 
-The CLI binary is resolved in this order:
+The package uses the local CLI for authentication and catalog discovery, so
+standard Devin installations keep their existing credential and endpoint
+selection. On Windows, `devin-fed.exe` and a `.cmd` or `.bat` wrapper that
+forwards to it select the fed credential store and API server. A wrapper also
+satisfies Herdr's process-recognition requirement; it does not replace the
+provider transport.
 
-1. `$DEVIN_CLI`
-2. `~/.local/bin/devin`, Homebrew, `/usr/local/bin/devin`
-3. Devin.app's bundled `devin` binary
-4. `which devin`
+The CLI binary is resolved from an explicit `$DEVIN_CLI`, known platform paths,
+and the platform's command locator. Linux and macOS use the standard Devin
+paths; Windows also checks the installed fed binary and common user-local
+wrappers.
 
 ## Install
 
@@ -62,7 +67,10 @@ Restart Pi or run `/reload`.
 /model devin/gpt-5-6-sol-high
 ```
 
-`/login devin` runs `devin auth login` if `~/.local/share/devin/credentials.toml` is missing. If you already signed in through the Devin CLI or Devin Desktop, that file is reused.
+`/login devin` runs `devin auth login` when the active CLI credential file is
+missing. Standard Devin credentials remain under the CLI's normal local path;
+`devin-fed` uses its fed credential file and API server. Existing CLI or Desktop
+login state is reused.
 
 Commands:
 

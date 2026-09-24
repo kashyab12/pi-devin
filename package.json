@@ -29,7 +29,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "tsx --test test/*.test.mjs",
+    "test": "node test-runner.mjs",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {

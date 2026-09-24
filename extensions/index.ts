@@ -1,20 +1,49 @@
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import { authStatus, loginWithCli, readCredentials } from "../src/credentials.js";
-import { whichDevin, devinVersion } from "../src/cli.js";
-import { FALLBACK_MODELS, loadCliCatalog, modelsFromCatalog } from "../src/models.js";
-import { CLIENT_IDE, CLIENT_VERSION } from "../src/metadata.js";
-import { streamDevin } from "../src/stream.js";
+
+type Runtime = {
+  authStatus: typeof import("../src/credentials.ts").authStatus;
+  loginWithCli: typeof import("../src/credentials.ts").loginWithCli;
+  readActiveCredentials: typeof import("../src/credentials.ts").readActiveCredentials;
+  whichDevin: typeof import("../src/cli.ts").whichDevin;
+  devinVersion: typeof import("../src/cli.ts").devinVersion;
+  FALLBACK_MODELS: typeof import("../src/models.ts").FALLBACK_MODELS;
+  loadCliCatalog: typeof import("../src/models.ts").loadCliCatalog;
+  modelsFromCatalog: typeof import("../src/models.ts").modelsFromCatalog;
+  CLIENT_IDE: typeof import("../src/metadata.ts").CLIENT_IDE;
+  CLIENT_VERSION: typeof import("../src/metadata.ts").CLIENT_VERSION;
+  streamDevin: typeof import("../src/stream.ts").streamDevin;
+};
+
+let runtime: Runtime | undefined;
 
 const PROVIDER_ID = "devin";
+const API_ID = "devin-local";
+const LOCAL_AUTH_MARKER = "devin-cli";
 const PLACEHOLDER_BASE_URL = "https://server.codeium.com";
 
 let _pi: ExtensionAPI | null = null;
 
-function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]): void {
+async function loadRuntime(): Promise<Runtime> {
+  if (!runtime) {
+    const [credentials, cli, models, metadata, stream] = await Promise.all([
+      import("../src/credentials.ts"),
+      import("../src/cli.ts"),
+      import("../src/models.ts"),
+      import("../src/metadata.ts"),
+      import("../src/stream.ts"),
+    ]);
+    runtime = { ...credentials, ...cli, ...models, ...metadata, ...stream };
+  }
+  return runtime;
+}
+
+async function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]): Promise<void> {
+  const { loginWithCli, readActiveCredentials, loadCliCatalog, modelsFromCatalog, streamDevin } = await loadRuntime();
   pi.registerProvider(PROVIDER_ID, {
     name: "Devin Local",
-    api: "devin-local",
+    api: API_ID,
+    apiKey: LOCAL_AUTH_MARKER,
     baseUrl: PLACEHOLDER_BASE_URL,
     models,
     oauth: {
@@ -24,7 +53,7 @@ function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]):
         if (_pi) {
           try {
             const catalog = await loadCliCatalog();
-            registerDevinProvider(_pi, modelsFromCatalog(catalog));
+            await registerDevinProvider(_pi, modelsFromCatalog(catalog));
           } catch {
             // keep current models
           }
@@ -36,7 +65,7 @@ function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]):
         };
       },
       async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
-        const creds = readCredentials();
+        const creds = readActiveCredentials();
         if (!creds) return credentials;
         return {
           refresh: "",
@@ -45,7 +74,7 @@ function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]):
         };
       },
       getApiKey(credentials: OAuthCredentials): string {
-        return readCredentials()?.apiKey || credentials.access;
+        return readActiveCredentials()?.apiKey || credentials.access;
       },
       modifyModels(models: Model<Api>[], _credentials: OAuthCredentials): Model<Api>[] {
         return models;
@@ -57,12 +86,13 @@ function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]):
 
 export default async function (pi: ExtensionAPI): Promise<void> {
   _pi = pi;
-  registerDevinProvider(pi, FALLBACK_MODELS);
+  const { loadCliCatalog, modelsFromCatalog, readActiveCredentials, authStatus, whichDevin, devinVersion, CLIENT_IDE, CLIENT_VERSION, FALLBACK_MODELS } = await loadRuntime();
+  await registerDevinProvider(pi, FALLBACK_MODELS);
 
   try {
-    if (readCredentials()) {
+    if (readActiveCredentials()) {
       const catalog = await loadCliCatalog();
-      registerDevinProvider(pi, modelsFromCatalog(catalog));
+      await registerDevinProvider(pi, modelsFromCatalog(catalog));
     }
   } catch {
     // fallback models already registered
@@ -70,9 +100,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", async () => {
     try {
-      if (!_pi || !readCredentials()) return;
+      if (!_pi || !readActiveCredentials()) return;
       const catalog = await loadCliCatalog();
-      registerDevinProvider(_pi, modelsFromCatalog(catalog));
+      await registerDevinProvider(_pi, modelsFromCatalog(catalog));
     } catch {
       // keep current models
     }
@@ -102,7 +132,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       try {
         const catalog = await loadCliCatalog();
         const models = modelsFromCatalog(catalog);
-        registerDevinProvider(pi, models);
+        await registerDevinProvider(pi, models);
         ctx.ui.notify(`Devin: loaded ${models.length} families from the local CLI.`, "info");
       } catch (error) {
         ctx.ui.notify(

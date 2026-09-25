@@ -17,17 +17,27 @@ Those models are available through the local Devin CLI. This package uses that C
 ## Requirements
 
 - Pi Coding Agent 0.86+
-- A signed-in [Devin CLI](https://docs.devin.ai/cli) (`devin auth status`)
 - Node 22.19+ (required by Pi 0.86)
+- A signed-in [Devin CLI](https://docs.devin.ai/cli) (`devin auth status`)
 
-The CLI binary is resolved in this order:
+The CLI binary is resolved from an explicit `$DEVIN_CLI`, known platform paths,
+and the platform's command locator. Windows checks the CLI installer and Devin
+Desktop locations, then uses `where.exe` for standard `devin` names. Native
+executables and `.cmd`/`.bat` wrappers are supported, including paths with
+spaces. Set `DEVIN_CLI` when the executable or wrapper uses a different name.
 
-1. `$DEVIN_CLI`
-2. `~/.local/bin/devin`, Homebrew, `/usr/local/bin/devin`
-3. Devin.app's bundled `devin` binary
-4. `which devin`
+For a custom CLI installation, set `DEVIN_CLI` to its executable or wrapper and
+`DEVIN_CREDENTIALS_PATH` to its credentials file. The API key and
+`api_server_url` are read from the same file. For example, in PowerShell:
 
-On Windows, discovery checks the CLI installer and Devin Desktop locations, then uses `where.exe` to search PATH. Native executables and `.cmd`/`.bat` wrappers are supported, including paths with spaces. `DEVIN_CLI` takes precedence on every platform.
+```powershell
+$env:DEVIN_CLI = "C:\tools\devin.cmd"
+$env:DEVIN_CREDENTIALS_PATH = "C:\path\to\credentials.toml"
+```
+
+Point `DEVIN_CREDENTIALS_PATH` at the file created by the selected CLI. The
+override must support the `auth status`, `auth login`, and `models list
+--format json` commands used by this package.
 
 ## Install
 
@@ -64,7 +74,10 @@ Restart Pi or run `/reload`.
 /model devin/gpt-5-6-sol-high
 ```
 
-`/login devin` runs `devin auth login` if `~/.local/share/devin/credentials.toml` is missing. If you already signed in through the Devin CLI or Devin Desktop, that file is reused.
+`/login devin` runs `devin auth login` when the active CLI credential file is
+missing. The default is `~/.local/share/devin/credentials.toml`; set
+`DEVIN_CREDENTIALS_PATH` when the selected CLI stores credentials elsewhere.
+Existing CLI or Desktop login state is reused.
 
 Commands:
 

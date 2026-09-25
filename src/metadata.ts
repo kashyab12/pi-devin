@@ -4,7 +4,7 @@ import {
   encodeString,
   encodeTimestampBody,
   encodeVarintField,
-} from "./wire.js";
+} from "./wire.ts";
 
 /**
  * Cognition gates Devin Local-only models (every GPT-5.6 variant: Sol, Terra,

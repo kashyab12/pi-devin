@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -44,6 +44,20 @@ function isFile(path: string): boolean {
   }
 }
 
+export function findDevinBinInPath(searchPath = process.env.PATH ?? "", platform = process.platform): string | null {
+  const names = platform === "win32"
+    ? ["devin.exe", "devin.cmd", "devin.bat", "devin"]
+    : ["devin"];
+  const separator = platform === "win32" ? ";" : delimiter;
+  for (const directory of searchPath.split(separator).filter(Boolean)) {
+    for (const name of names) {
+      const bin = join(directory, name);
+      if (isFile(bin)) return bin;
+    }
+  }
+  return null;
+}
+
 export function findDevinBin(): string | null {
   // An explicit override must take effect even after a successful discovery.
   if (process.env.DEVIN_CLI && isFile(process.env.DEVIN_CLI)) return process.env.DEVIN_CLI;
@@ -54,8 +68,8 @@ export function findDevinBin(): string | null {
       return bin;
     }
   }
-  cachedBin = null;
-  return null;
+  cachedBin = findDevinBinInPath();
+  return cachedBin;
 }
 
 export function clearDevinBinCache(): void {
@@ -68,7 +82,9 @@ export async function whichDevin(): Promise<string | null> {
   // Windows has no `which`; use `where` and probe the returned paths directly.
   const isWindows = process.platform === "win32";
   const locator = isWindows ? "where.exe" : "/usr/bin/which";
-  const candidates = isWindows ? ["devin.exe", "devin.cmd", "devin"] : ["devin"];
+  const candidates = isWindows
+    ? ["devin.exe", "devin.cmd", "devin.bat", "devin"]
+    : ["devin"];
   for (const candidate of candidates) {
     try {
       const { stdout } = await execFileAsync(locator, [candidate], { timeout: 5_000 });

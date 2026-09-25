@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { buildMetadata } from "./metadata.js";
-import { encodeMessage, iterFields } from "./wire.js";
+import { buildMetadata } from "./metadata.ts";
+import { encodeMessage, iterFields } from "./wire.ts";
 
 export interface MintedUserJwt {
   jwt: string;
@@ -48,7 +48,11 @@ export async function mintUserJwt(
   });
   const buf = Buffer.from(await resp.arrayBuffer());
   if (!resp.ok) {
-    throw new Error(`GetUserJwt HTTP ${resp.status}: ${buf.toString("utf8").slice(0, 240)}`);
+    const body = buf.toString("utf8");
+    if (resp.status === 501 && /jwt tokens not enabled/i.test(body)) {
+      return { jwt: "", expiresAt: Math.floor(Date.now() / 1000) + 300 };
+    }
+    throw new Error(`GetUserJwt HTTP ${resp.status}: ${body.slice(0, 240)}`);
   }
 
   let jwt: string | null = null;

@@ -9,8 +9,10 @@ import { clearDevinBinCache, findDevinBin, whichDevin, runDevin } from "../src/c
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "pi devin cli "));
   // Windows environment lookups ignore case; a spread object does not.
-  const keys = ["DEVIN_CLI", "LOCALAPPDATA", "ProgramFiles", "PATH"];
+  const keys = ["DEVIN_CLI", "LOCALAPPDATA", "ProgramFiles", "PATH", "USERPROFILE", "HOME"];
   const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  process.env.USERPROFILE = directory;
+  process.env.HOME = directory;
   clearDevinBinCache();
   t.after(() => {
     for (const key of keys) {
@@ -41,6 +43,19 @@ test("finds the Windows installer binary and ignores a directory override", { sk
   process.env.DEVIN_CLI = directory;
   const binary = join(directory, "devin", "cli", "bin", "devin.exe");
   mkdirSync(dirname(binary), { recursive: true }); writeFileSync(binary, "");
+  assert.equal(findDevinBin(), binary);
+});
+
+test("synchronous startup discovery finds the standard CLI on PATH", { skip: process.platform !== "win32" }, (t) => {
+  const directory = fixture(t);
+  delete process.env.DEVIN_CLI;
+  process.env.LOCALAPPDATA = join(directory, "localappdata");
+  process.env.ProgramFiles = join(directory, "program-files");
+  const bin = join(directory, "path bin");
+  mkdirSync(bin);
+  const binary = join(bin, "devin.exe");
+  writeFileSync(binary, "");
+  process.env.PATH = bin;
   assert.equal(findDevinBin(), binary);
 });
 

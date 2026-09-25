@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { getEventListeners } from "node:events";
 import {
+  appendFileSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -8,6 +12,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +25,36 @@ const jsonResponse = (body, init = {}) => new Response(
   typeof body === "string" ? body : JSON.stringify(body),
   { ...init, headers: { "content-type": "application/json", ...init.headers } },
 );
+
+function deferredEndlessResponse({ status = 200, contentType = "application/json" } = {}) {
+  let pulls = 0;
+  let cancels = 0;
+  let settled = false;
+  let releaseCancel;
+  let markCancelStarted;
+  const cancelGate = new Promise((resolve) => { releaseCancel = resolve; });
+  const cancelStarted = new Promise((resolve) => { markCancelStarted = resolve; });
+  const body = new ReadableStream({
+    pull(controller) {
+      pulls++;
+      controller.enqueue(Uint8Array.of(123));
+    },
+    async cancel() {
+      cancels++;
+      markCancelStarted();
+      await cancelGate;
+      settled = true;
+    },
+  });
+  return {
+    response: new Response(body, { status, headers: { "content-type": contentType } }),
+    cancelStarted,
+    releaseCancel: () => releaseCancel(),
+    get pulls() { return pulls; },
+    get cancels() { return cancels; },
+    get settled() { return settled; },
+  };
+}
 
 test("resolves the current client version from the official manifest and caches it", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "pi-devin-client-version-"));
@@ -196,6 +231,115 @@ test("atomically replaces a pre-existing cache symlink without following it", as
   assert.deepEqual(readdirSync(dir).sort(), ["client-version.json", "target.json"]);
 });
 
+test("disables persistent caching when secure open flags are unavailable", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-devin-cache-capabilities-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const available = {
+    noFollow: true,
+    directory: true,
+    nonBlock: true,
+  };
+
+  for (const missing of Object.keys(available)) {
+    const cachePath = join(dir, missing, "read", "client-version.json");
+    mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
+    writeFileSync(cachePath, JSON.stringify({
+      version: "9.9.9", source: "official-manifest", fetchedAt: 1_000,
+    }), { mode: 0o600 });
+    const cacheOptions = { capabilities: { ...available, [missing]: false } };
+    const fetchImpl = async () => jsonResponse({ windsurfVersion: "3.10.35" });
+    const version = await metadata.resolveClientVersion?.({
+      productPaths: [], cachePath, offline: false, now: 2_000, cacheOptions, fetchImpl,
+    });
+    assert.equal(version, "3.10.35");
+    assert.equal(JSON.parse(readFileSync(cachePath, "utf8")).version, "9.9.9");
+
+    const writePath = join(dir, missing, "write", "client-version.json");
+    assert.equal(await metadata.resolveClientVersion?.({
+      productPaths: [], cachePath: writePath, offline: false, cacheOptions, fetchImpl,
+    }), "3.10.35");
+    assert.equal(existsSync(writePath), false);
+  }
+});
+
+test("does not block when a cache path is a FIFO", { timeout: 2_000 }, async (t) => {
+  if (process.platform === "win32") {
+    t.skip("FIFO paths are not available on Windows");
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "pi-devin-cache-fifo-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cachePath = join(dir, "client-version.json");
+  const made = spawnSync("mkfifo", [cachePath]);
+  if (made.status !== 0) {
+    t.skip("mkfifo is unavailable");
+    return;
+  }
+
+  const version = await metadata.resolveClientVersion?.({
+    productPaths: [], cachePath, offline: false,
+    fetchImpl: async () => jsonResponse({ windsurfVersion: "3.10.35" }),
+  });
+  assert.equal(version, "3.10.35");
+  assert.equal(lstatSync(cachePath).isFile(), true);
+});
+
+test("fails cache read safely when the path swaps to a FIFO before open", { timeout: 2_000 }, async (t) => {
+  if (process.platform === "win32") {
+    t.skip("FIFO paths are not available on Windows");
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "pi-devin-cache-path-swap-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cachePath = join(dir, "client-version.json");
+  writeFileSync(cachePath, JSON.stringify({
+    version: "9.9.9", source: "official-manifest", fetchedAt: 1_000,
+  }), { mode: 0o600 });
+  let swapped = false;
+
+  const version = await metadata.resolveClientVersion?.({
+    productPaths: [], cachePath, offline: false, now: 2_000,
+    cacheOptions: {
+      beforeCacheReadOpen(path) {
+        swapped = true;
+        unlinkSync(path);
+        const made = spawnSync("mkfifo", [path]);
+        assert.equal(made.status, 0);
+      },
+    },
+    fetchImpl: async () => jsonResponse({ windsurfVersion: "3.10.35" }),
+  });
+
+  assert.equal(swapped, true);
+  assert.equal(version, "3.10.35");
+  assert.equal(lstatSync(cachePath).isFile(), true);
+});
+
+test("bounds cache FD reads when the file grows after open", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-devin-cache-growth-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cachePath = join(dir, "client-version.json");
+  writeFileSync(cachePath, JSON.stringify({
+    version: "9.9.9", source: "official-manifest", fetchedAt: 1_000,
+  }), { mode: 0o600 });
+  let grew = false;
+
+  const version = await metadata.resolveClientVersion?.({
+    productPaths: [], cachePath, offline: false, now: 2_000,
+    cacheOptions: {
+      afterCacheReadOpen(path) {
+        grew = true;
+        appendFileSync(path, "x".repeat(20_000));
+      },
+    },
+    fetchImpl: async () => jsonResponse({ windsurfVersion: "3.10.35" }),
+  });
+
+  assert.equal(grew, true);
+  assert.equal(version, "3.10.35");
+  assert.equal(JSON.parse(readFileSync(cachePath, "utf8")).version, "3.10.35");
+});
+
 test("cleans a random temporary cache file when the atomic rename fails", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "pi-devin-cache-cleanup-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -292,6 +436,63 @@ test("rejects non-JSON, malformed, non-object, and oversized manifest bodies", a
         fetchImpl: async () => response,
       }),
       expected,
+    );
+  }
+});
+
+async function assertRejectedBodyShutdown(t, fixture, expected) {
+  const dir = mkdtempSync(join(tmpdir(), "pi-devin-rejected-body-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const controller = new AbortController();
+  const resolution = metadata.resolveClientVersion?.({
+    productPaths: [],
+    cachePath: join(dir, "client-version.json"),
+    offline: false,
+    timeoutMs: 1_000,
+    signal: controller.signal,
+    fetchImpl: async () => fixture.response,
+  });
+  const rejection = assert.rejects(resolution, expected);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(fixture.cancels, 1);
+  await fixture.cancelStarted;
+  assert.ok(getEventListeners(controller.signal, "abort").length > 0, "caller abort remains attached during body shutdown");
+  const pullsAtCancel = fixture.pulls;
+  fixture.releaseCancel();
+  await rejection;
+  assert.equal(fixture.settled, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fixture.pulls, pullsAtCancel, "body stops pulling after cancellation");
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0, "caller abort listener is cleaned after shutdown");
+}
+
+test("awaits shutdown of an endless non-OK manifest body before rejecting", async (t) => {
+  const fixture = deferredEndlessResponse({ status: 503 });
+  await assertRejectedBodyShutdown(t, fixture, /HTTP 503/i);
+});
+
+test("awaits shutdown of an endless non-JSON manifest body before rejecting", async (t) => {
+  const fixture = deferredEndlessResponse({ contentType: "text/plain" });
+  await assertRejectedBodyShutdown(t, fixture, /JSON content type/i);
+});
+
+test("preserves the primary manifest error for null or already-locked rejected bodies", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-devin-rejected-locked-body-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const locked = deferredEndlessResponse({ status: 503 });
+  const reader = locked.response.body.getReader();
+  t.after(() => { reader.releaseLock(); });
+
+  for (const [index, response] of [new Response(null, { status: 503 }), locked.response].entries()) {
+    await assert.rejects(
+      metadata.resolveClientVersion?.({
+        productPaths: [],
+        cachePath: join(dir, `${index}.json`),
+        offline: false,
+        fetchImpl: async () => response,
+      }),
+      /HTTP 503/i,
     );
   }
 });

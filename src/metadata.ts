@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  chmodSync,
   closeSync,
   constants,
   existsSync,
@@ -10,6 +9,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -80,7 +80,10 @@ function combinedSignal(signals: AbortSignal[]): { signal: AbortSignal; cleanup:
 }
 
 function waitForSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(abortReason(signal));
+  if (signal.aborted) {
+    void promise.catch(() => {});
+    return Promise.reject(abortReason(signal));
+  }
   return new Promise<T>((resolve, reject) => {
     const cleanup = (): void => signal.removeEventListener("abort", onAbort);
     const onAbort = (): void => {
@@ -109,80 +112,177 @@ function ownedByCurrentUser(uid: number): boolean {
   return typeof process.getuid !== "function" || uid === process.getuid();
 }
 
-function ensureSafeCacheDirectory(path: string, create: boolean): boolean {
-  let stat;
-  try {
-    stat = lstatSync(path);
-  } catch (error) {
-    if (!isMissing(error)) {
-      throw new UnsafeClientVersionCacheDirectoryError(`Unsafe Devin client version cache directory: ${path}`);
-    }
-    if (!create) return false;
-    mkdirSync(path, { recursive: true, mode: 0o700 });
-    try {
-      stat = lstatSync(path);
-    } catch {
-      throw new UnsafeClientVersionCacheDirectoryError(`Unsafe Devin client version cache directory: ${path}`);
-    }
-  }
-  if (stat.isSymbolicLink() || !stat.isDirectory() || !ownedByCurrentUser(stat.uid)) {
-    throw new UnsafeClientVersionCacheDirectoryError(`Unsafe Devin client version cache directory: ${path}`);
-  }
-  try {
-    const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-    const directoryOnly = typeof constants.O_DIRECTORY === "number" ? constants.O_DIRECTORY : 0;
-    if (noFollow && directoryOnly) {
-      const fd = openSync(path, constants.O_RDONLY | noFollow | directoryOnly);
-      try {
-        const openedStat = fstatSync(fd);
-        if (
-          !openedStat.isDirectory()
-          || !ownedByCurrentUser(openedStat.uid)
-          || stat.dev !== openedStat.dev
-          || stat.ino !== openedStat.ino
-        ) {
-          throw new Error("cache directory changed while validating it");
-        }
-        fchmodSync(fd, 0o700);
-      } finally {
-        closeSync(fd);
-      }
-    } else {
-      chmodSync(path, 0o700);
-    }
-  } catch {
-    throw new UnsafeClientVersionCacheDirectoryError(`Unsafe Devin client version cache directory: ${path}`);
-  }
-  return true;
+interface ClientVersionCacheCapabilities {
+  noFollow: number;
+  directory: number;
+  nonBlock: number;
 }
 
-function readClientVersionCache(path: string): { version: string; fetchedAt: number } | null {
-  if (!ensureSafeCacheDirectory(dirname(path), false)) return null;
+interface ClientVersionCacheOptions {
+  capabilities?: Partial<Record<keyof ClientVersionCacheCapabilities, boolean>>;
+  beforeCacheReadOpen?: (path: string) => void;
+  afterCacheReadOpen?: (path: string, fd: number) => void;
+}
+
+interface SafeCacheDirectory {
+  fd: number;
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+function cacheCapabilities(options?: ClientVersionCacheOptions): ClientVersionCacheCapabilities {
+  const available = (flag: number | undefined, enabled: boolean | undefined): number =>
+    enabled === false || typeof flag !== "number" ? 0 : flag;
+  return {
+    noFollow: available(constants.O_NOFOLLOW, options?.capabilities?.noFollow),
+    directory: available(constants.O_DIRECTORY, options?.capabilities?.directory),
+    nonBlock: available(constants.O_NONBLOCK, options?.capabilities?.nonBlock),
+  };
+}
+
+function persistentCacheIsSafe(capabilities: ClientVersionCacheCapabilities): boolean {
+  return capabilities.noFollow !== 0 && capabilities.directory !== 0 && capabilities.nonBlock !== 0;
+}
+
+function sameNode(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function validateCacheDirectory(directory: SafeCacheDirectory): void {
+  try {
+    const openedStat = fstatSync(directory.fd);
+    const pathStat = lstatSync(directory.path);
+    if (
+      !openedStat.isDirectory()
+      || !pathStat.isDirectory()
+      || pathStat.isSymbolicLink()
+      || !ownedByCurrentUser(openedStat.uid)
+      || !ownedByCurrentUser(pathStat.uid)
+      || !sameNode(openedStat, directory)
+      || !sameNode(pathStat, directory)
+    ) throw new Error("cache directory changed while in use");
+  } catch {
+    throw new UnsafeClientVersionCacheDirectoryError(
+      `Unsafe Devin client version cache directory: ${directory.path}`,
+    );
+  }
+}
+
+function openSafeCacheDirectory(
+  path: string,
+  create: boolean,
+  capabilities: ClientVersionCacheCapabilities,
+): SafeCacheDirectory | null {
   let pathStat;
   try {
     pathStat = lstatSync(path);
   } catch (error) {
-    if (isMissing(error)) return null;
-    return null;
+    if (!isMissing(error)) {
+      throw new UnsafeClientVersionCacheDirectoryError(`Unsafe Devin client version cache directory: ${path}`);
+    }
+    if (!create) return null;
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    try {
+      pathStat = lstatSync(path);
+    } catch {
+      throw new UnsafeClientVersionCacheDirectoryError(`Unsafe Devin client version cache directory: ${path}`);
+    }
   }
-  // Never follow a cache-file symlink. It remains in place until a verified
-  // manifest result atomically replaces the directory entry.
-  if (pathStat.isSymbolicLink() || !pathStat.isFile() || !ownedByCurrentUser(pathStat.uid)) return null;
-  if (pathStat.size > CLIENT_VERSION_CACHE_MAX_BYTES) return null;
+  if (pathStat.isSymbolicLink() || !pathStat.isDirectory() || !ownedByCurrentUser(pathStat.uid)) {
+    throw new UnsafeClientVersionCacheDirectoryError(`Unsafe Devin client version cache directory: ${path}`);
+  }
 
-  const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
   let fd: number | undefined;
   try {
-    fd = openSync(path, constants.O_RDONLY | noFollow);
+    fd = openSync(
+      path,
+      constants.O_RDONLY | capabilities.noFollow | capabilities.directory | capabilities.nonBlock,
+    );
+    const openedStat = fstatSync(fd);
+    if (
+      !openedStat.isDirectory()
+      || !ownedByCurrentUser(openedStat.uid)
+      || !sameNode(pathStat, openedStat)
+    ) throw new Error("cache directory changed while opening it");
+    fchmodSync(fd, 0o700);
+    const directory = { fd, path, dev: openedStat.dev, ino: openedStat.ino };
+    validateCacheDirectory(directory);
+    fd = undefined;
+    return directory;
+  } catch {
+    throw new UnsafeClientVersionCacheDirectoryError(`Unsafe Devin client version cache directory: ${path}`);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function readClientVersionCache(
+  path: string,
+  capabilities: ClientVersionCacheCapabilities,
+  options?: ClientVersionCacheOptions,
+): { version: string; fetchedAt: number } | null {
+  if (!persistentCacheIsSafe(capabilities)) return null;
+  const directory = openSafeCacheDirectory(dirname(path), false, capabilities);
+  if (!directory) return null;
+  let fd: number | undefined;
+  try {
+    validateCacheDirectory(directory);
+    let pathStat;
+    try {
+      pathStat = lstatSync(path);
+    } catch (error) {
+      if (isMissing(error)) return null;
+      return null;
+    }
+    // Never follow a cache-file symlink or open a non-regular path.
+    if (pathStat.isSymbolicLink() || !pathStat.isFile() || !ownedByCurrentUser(pathStat.uid)) return null;
+    if (pathStat.size > CLIENT_VERSION_CACHE_MAX_BYTES) return null;
+
+    options?.beforeCacheReadOpen?.(path);
+    fd = openSync(
+      path,
+      constants.O_RDONLY | capabilities.noFollow | capabilities.nonBlock,
+    );
+    options?.afterCacheReadOpen?.(path, fd);
     const openedStat = fstatSync(fd);
     if (
       !openedStat.isFile()
       || !ownedByCurrentUser(openedStat.uid)
       || openedStat.size > CLIENT_VERSION_CACHE_MAX_BYTES
-      || (pathStat.dev !== openedStat.dev || pathStat.ino !== openedStat.ino)
+      || !sameNode(pathStat, openedStat)
     ) return null;
     fchmodSync(fd, 0o600);
-    const parsed: unknown = JSON.parse(readFileSync(fd, "utf8"));
+
+    const body = Buffer.alloc(CLIENT_VERSION_CACHE_MAX_BYTES + 1);
+    let size = 0;
+    while (size < body.length) {
+      const bytesRead = readSync(fd, body, size, body.length - size, null);
+      if (bytesRead === 0) break;
+      size += bytesRead;
+    }
+    if (size > CLIENT_VERSION_CACHE_MAX_BYTES) return null;
+
+    const afterReadStat = fstatSync(fd);
+    let afterReadPathStat;
+    try {
+      afterReadPathStat = lstatSync(path);
+    } catch {
+      return null;
+    }
+    if (
+      !afterReadStat.isFile()
+      || !afterReadPathStat.isFile()
+      || afterReadPathStat.isSymbolicLink()
+      || !ownedByCurrentUser(afterReadStat.uid)
+      || !ownedByCurrentUser(afterReadPathStat.uid)
+      || afterReadStat.size > CLIENT_VERSION_CACHE_MAX_BYTES
+      || !sameNode(openedStat, afterReadStat)
+      || !sameNode(openedStat, afterReadPathStat)
+    ) return null;
+    validateCacheDirectory(directory);
+
+    const parsed: unknown = JSON.parse(body.subarray(0, size).toString("utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     const cache = parsed as { version?: unknown; source?: unknown; fetchedAt?: unknown };
     const version = validClientVersion(cache.version);
@@ -196,36 +296,99 @@ function readClientVersionCache(path: string): { version: string; fetchedAt: num
   } catch {
     return null;
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    try {
+      if (fd !== undefined) closeSync(fd);
+      validateCacheDirectory(directory);
+    } finally {
+      closeSync(directory.fd);
+    }
   }
 }
 
-function writeClientVersionCache(path: string, version: string, fetchedAt: number): void {
-  const directory = dirname(path);
-  ensureSafeCacheDirectory(directory, true);
+function writeClientVersionCache(
+  path: string,
+  version: string,
+  fetchedAt: number,
+  capabilities: ClientVersionCacheCapabilities,
+): void {
+  if (!persistentCacheIsSafe(capabilities)) return;
+  const directory = openSafeCacheDirectory(dirname(path), true, capabilities);
+  if (!directory) return;
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
   let fd: number | undefined;
   try {
+    validateCacheDirectory(directory);
     fd = openSync(
       temporaryPath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow,
+      constants.O_WRONLY
+        | constants.O_CREAT
+        | constants.O_EXCL
+        | capabilities.noFollow
+        | capabilities.nonBlock,
       0o600,
     );
+    let openedStat = fstatSync(fd);
+    let temporaryPathStat = lstatSync(temporaryPath);
+    if (
+      !openedStat.isFile()
+      || !temporaryPathStat.isFile()
+      || temporaryPathStat.isSymbolicLink()
+      || !ownedByCurrentUser(openedStat.uid)
+      || !ownedByCurrentUser(temporaryPathStat.uid)
+      || !sameNode(openedStat, temporaryPathStat)
+    ) throw new Error("Unsafe Devin client version temporary cache file.");
+
     writeFileSync(
       fd,
       `${JSON.stringify({ version, source: "official-manifest", fetchedAt })}\n`,
       "utf8",
     );
     fchmodSync(fd, 0o600);
-    closeSync(fd);
-    fd = undefined;
+    openedStat = fstatSync(fd);
+    temporaryPathStat = lstatSync(temporaryPath);
+    if (
+      !openedStat.isFile()
+      || !temporaryPathStat.isFile()
+      || temporaryPathStat.isSymbolicLink()
+      || !ownedByCurrentUser(openedStat.uid)
+      || !ownedByCurrentUser(temporaryPathStat.uid)
+      || !sameNode(openedStat, temporaryPathStat)
+      || (openedStat.mode & 0o777) !== 0o600
+    ) throw new Error("Unsafe Devin client version temporary cache file.");
+
+    validateCacheDirectory(directory);
+    try {
+      const finalPathStat = lstatSync(path);
+      if (!ownedByCurrentUser(finalPathStat.uid) || finalPathStat.isDirectory()) {
+        throw new Error("Unsafe Devin client version cache destination.");
+      }
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
     renameSync(temporaryPath, path);
+
+    const finalPathStat = lstatSync(path);
+    const finalOpenedStat = fstatSync(fd);
+    if (
+      !finalPathStat.isFile()
+      || finalPathStat.isSymbolicLink()
+      || !finalOpenedStat.isFile()
+      || !ownedByCurrentUser(finalPathStat.uid)
+      || !ownedByCurrentUser(finalOpenedStat.uid)
+      || !sameNode(finalPathStat, finalOpenedStat)
+      || (finalPathStat.mode & 0o777) !== 0o600
+    ) throw new Error("Unsafe Devin client version cache file after rename.");
+    validateCacheDirectory(directory);
   } finally {
     try {
       if (fd !== undefined) closeSync(fd);
     } finally {
-      if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+      try {
+        if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+        validateCacheDirectory(directory);
+      } finally {
+        closeSync(directory.fd);
+      }
     }
   }
 }
@@ -249,13 +412,19 @@ async function readBoundedManifest(response: Response, signal: AbortSignal): Pro
       if (!value) continue;
       size += value.byteLength;
       if (size > CLIENT_VERSION_MANIFEST_MAX_BYTES) {
-        void reader.cancel().catch(() => {});
         throw new ClientVersionManifestError(
           `Devin client version manifest exceeded ${CLIENT_VERSION_MANIFEST_MAX_BYTES} bytes.`,
         );
       }
       chunks.push(value);
     }
+  } catch (error) {
+    try {
+      await waitForSignal(reader.cancel(error), signal);
+    } catch {
+      // Preserve the primary read, timeout, or caller-abort error.
+    }
+    throw error;
   } finally {
     try {
       reader.releaseLock();
@@ -277,6 +446,16 @@ async function readBoundedManifest(response: Response, signal: AbortSignal): Pro
   return parsed as Record<string, unknown>;
 }
 
+async function shutdownResponseBody(response: Response, signal: AbortSignal, reason: unknown): Promise<void> {
+  if (!response.body) return;
+  try {
+    await waitForSignal(response.body.cancel(reason), signal);
+  } catch {
+    // Null, locked, already-cancelled, or abort-bounded bodies must not mask
+    // the primary controlled manifest error.
+  }
+}
+
 export async function resolveClientVersion(options: {
   productPaths?: string[];
   cachePath: string;
@@ -285,6 +464,7 @@ export async function resolveClientVersion(options: {
   now?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  cacheOptions?: ClientVersionCacheOptions;
 }): Promise<string> {
   throwIfAborted(options.signal);
   for (const path of options.productPaths ?? []) {
@@ -302,7 +482,8 @@ export async function resolveClientVersion(options: {
   }
 
   const now = options.now ?? Date.now();
-  const cached = readClientVersionCache(options.cachePath);
+  const capabilities = cacheCapabilities(options.cacheOptions);
+  const cached = readClientVersionCache(options.cachePath, capabilities, options.cacheOptions);
   if (
     cached
     && now >= cached.fetchedAt
@@ -329,19 +510,22 @@ export async function resolveClientVersion(options: {
     if (timeout.aborted) throw new Error("Devin client version manifest request timed out.");
     throw new Error(`Devin client version manifest request failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!response.ok) {
-    combined.cleanup();
-    throw new Error(`Devin client version manifest returned HTTP ${response.status}.`);
-  }
-
   let payload: Record<string, unknown>;
   try {
-    payload = await readBoundedManifest(response, combined.signal);
-  } catch (error) {
-    if (options.signal?.aborted) throw abortReason(options.signal);
-    if (timeout.aborted) throw new Error("Devin client version manifest request timed out.");
-    if (error instanceof ClientVersionManifestError) throw error;
-    throw new Error("Devin client version manifest body could not be read.");
+    if (!response.ok) {
+      const error = new Error(`Devin client version manifest returned HTTP ${response.status}.`);
+      await shutdownResponseBody(response, combined.signal, error);
+      throw error;
+    }
+    try {
+      payload = await readBoundedManifest(response, combined.signal);
+    } catch (error) {
+      await shutdownResponseBody(response, combined.signal, error);
+      if (options.signal?.aborted) throw abortReason(options.signal);
+      if (timeout.aborted) throw new Error("Devin client version manifest request timed out.");
+      if (error instanceof ClientVersionManifestError) throw error;
+      throw new Error("Devin client version manifest body could not be read.");
+    }
   } finally {
     combined.cleanup();
   }
@@ -349,7 +533,7 @@ export async function resolveClientVersion(options: {
   if (!version) throw new Error("Devin client version manifest did not contain a valid windsurfVersion.");
 
   throwIfAborted(options.signal);
-  writeClientVersionCache(options.cachePath, version, now);
+  writeClientVersionCache(options.cachePath, version, now, capabilities);
   return version;
 }
 

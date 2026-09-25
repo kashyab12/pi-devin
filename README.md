@@ -73,6 +73,8 @@ Commands:
 
 The model catalog is cached for six hours in `$XDG_CACHE_HOME/pi-devin/models.json` (or `~/.cache/pi-devin/models.json`). A fresh cache avoids the CLI call at startup; an older cache remains available while it refreshes in the background. Set `PI_OFFLINE=1` to skip automatic catalog refreshes. `/devin-refresh` still requests a refresh explicitly.
 
+The client version advertised to Cognition is resolved independently. `DEVIN_CLIENT_VERSION=<major.minor.patch>` is a trusted launch-environment emergency or test override; otherwise an installed Devin Desktop `product.json` wins, followed by a validated six-hour cache at `$XDG_CACHE_HOME/pi-devin/client-version.json`, then the fixed official stable update manifest. The `darwin-arm64` endpoint is queried only for its verified `windsurfVersion` value across hosts; it does not install or download the platform artifact, and no credentials or identifying headers are sent. Persistent caching is disabled when the runtime lacks the required secure filesystem flags. Cache hardening prevents cross-UID/path-type attacks; mutation by another process running as the same UID is outside the cache integrity boundary. The provider fails closed instead of sending a stale hardcoded version.
+
 ## What this is / is not
 
 | This package | Not this package |

@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { mapContextToChat, type ChatHistoryItem, type ContentPart, type ToolDef } from "./context-map.js";
 import { getCachedUserJwt } from "./jwt.js";
-import { buildMetadata } from "./metadata.js";
+import { buildMetadata, resolveRuntimeClientVersion } from "./metadata.js";
 import { resolveModelUid } from "./models.js";
 import {
   encodeFixed64Field,
@@ -119,6 +119,7 @@ function buildGetChatMessageRequest(args: {
   requestId: bigint;
   triggerId: string;
   maxOutputTokens?: number;
+  clientVersion: string;
 }): Buffer {
   const metadata = buildMetadata({
     apiKey: args.apiKey,
@@ -126,6 +127,7 @@ function buildGetChatMessageRequest(args: {
     sessionId: args.sessionId,
     requestId: args.requestId,
     triggerId: args.triggerId,
+    version: args.clientVersion,
   });
   const prompts = args.messages.map((message) =>
     encodeMessage(
@@ -244,9 +246,10 @@ async function* streamChatEvents(args: {
   tools?: ToolDef[];
   maxOutputTokens?: number;
   signal?: AbortSignal;
+  clientVersion: string;
 }): AsyncGenerator<CloudChatEvent> {
   const host = args.host.replace(/\/$/, "");
-  const userJwt = await getCachedUserJwt(args.apiKey, host, args.signal);
+  const userJwt = await getCachedUserJwt(args.apiKey, host, args.signal, args.clientVersion);
   const ids = sessionIds(args.apiKey, host);
   const proto = buildGetChatMessageRequest({
     apiKey: args.apiKey,
@@ -261,6 +264,7 @@ async function* streamChatEvents(args: {
     requestId: BigInt(Date.now()),
     triggerId: randomUUID(),
     maxOutputTokens: args.maxOutputTokens,
+    clientVersion: args.clientVersion,
   });
 
   const resp = await fetch(`${host}/exa.api_server_pb.ApiServerService/GetChatMessage`, {
@@ -439,7 +443,12 @@ export function streamDevin(
     try {
       const apiKey = options?.apiKey;
       if (!apiKey) throw new Error("No Devin credentials. Run /login devin (uses the local Devin CLI).");
+      options?.signal?.throwIfAborted();
       const host = (options?.env?.DEVIN_API_SERVER_URL || "https://server.codeium.com").replace(/\/$/, "");
+      const clientVersion = await resolveRuntimeClientVersion({
+        env: options?.env as NodeJS.ProcessEnv | undefined,
+        signal: options?.signal,
+      });
       const modelUid = resolveModelUid(model.id, model.thinkingLevelMap, options?.reasoning);
       const mapped = mapContextToChat(context);
       stream.push({ type: "start", partial: output });
@@ -453,6 +462,7 @@ export function streamDevin(
         tools: mapped.tools.length > 0 ? mapped.tools : undefined,
         maxOutputTokens: options?.maxTokens,
         signal: options?.signal,
+        clientVersion,
       })) {
         if (event.kind === "text") {
           closeThinking();

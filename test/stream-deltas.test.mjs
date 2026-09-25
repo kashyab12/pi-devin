@@ -30,7 +30,8 @@ async function run(t, frames) {
     }));
   });
   const stream = streamDevin(model, { messages: [] }, {
-    apiKey: "synthetic-test-key", env: { DEVIN_API_SERVER_URL: "https://devin.invalid" },
+    apiKey: "synthetic-test-key",
+    env: { DEVIN_API_SERVER_URL: "https://devin.invalid", DEVIN_CLIENT_VERSION: "3.10.35" },
   });
   const events = [];
   for await (const event of stream) events.push(structuredClone(event));

@@ -24,16 +24,45 @@ function anySignal(signals: AbortSignal[]): AbortSignal {
   return controller.signal;
 }
 
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
+
+function waitForSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = (): void => signal.removeEventListener("abort", onAbort);
+    const onAbort = (): void => {
+      cleanup();
+      reject(abortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function mintUserJwt(
   apiKey: string,
   host: string,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  clientVersion: string,
 ): Promise<MintedUserJwt> {
   const metadata = buildMetadata({
     apiKey,
     sessionId: randomUUID(),
     requestId: BigInt(Date.now()),
     triggerId: randomUUID(),
+    version: clientVersion,
   });
   const timeout = AbortSignal.timeout(30_000);
   const combined = signal ? anySignal([signal, timeout]) : timeout;
@@ -75,26 +104,42 @@ export async function mintUserJwt(
   return { jwt, expiresAt };
 }
 
-let cache: { jwt: string; expiresAt: number; apiKey: string; host: string } | null = null;
+let cache: { jwt: string; expiresAt: number; apiKey: string; host: string; clientVersion: string } | null = null;
 const inFlight = new Map<string, Promise<MintedUserJwt>>();
 
-export async function getCachedUserJwt(apiKey: string, host: string, signal?: AbortSignal): Promise<string> {
+export async function getCachedUserJwt(
+  apiKey: string,
+  host: string,
+  signal: AbortSignal | undefined,
+  clientVersion: string,
+): Promise<string> {
+  if (signal?.aborted) throw abortReason(signal);
   const now = Math.floor(Date.now() / 1000);
-  if (cache && cache.apiKey === apiKey && cache.host === host && cache.expiresAt > now + 60) {
+  if (
+    cache
+    && cache.apiKey === apiKey
+    && cache.host === host
+    && cache.clientVersion === clientVersion
+    && cache.expiresAt > now + 60
+  ) {
     return cache.jwt;
   }
-  const key = `${host}\x1f${apiKey}`;
-  const existing = inFlight.get(key);
-  if (existing) return (await existing).jwt;
-  const promise = mintUserJwt(apiKey, host, signal);
-  inFlight.set(key, promise);
-  try {
-    const minted = await promise;
-    cache = { jwt: minted.jwt, expiresAt: minted.expiresAt, apiKey, host };
-    return minted.jwt;
-  } finally {
-    inFlight.delete(key);
+  const key = `${host}\x1f${apiKey}\x1f${clientVersion}`;
+  let promise = inFlight.get(key);
+  if (!promise) {
+    // A shared mint has its own timeout and is never tied to any one waiter's
+    // cancellation signal. Each caller races the shared work independently.
+    promise = mintUserJwt(apiKey, host, undefined, clientVersion)
+      .then((minted) => {
+        cache = { jwt: minted.jwt, expiresAt: minted.expiresAt, apiKey, host, clientVersion };
+        return minted;
+      })
+      .finally(() => {
+        inFlight.delete(key);
+      });
+    inFlight.set(key, promise);
   }
+  return (await waitForSignal(promise, signal)).jwt;
 }
 
 export function clearCachedUserJwt(): void {

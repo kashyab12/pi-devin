@@ -53,10 +53,11 @@ function mockDevin(t, replies = [Buffer.concat([encodeString(3, "OK"), encodeVar
   return requests;
 }
 
-async function complete(context) {
+async function complete(context, extraOptions) {
   const stream = streamDevin(model, context, {
     apiKey: "synthetic-test-key",
     env: { DEVIN_API_SERVER_URL: "https://devin.invalid" },
+    ...extraOptions,
   });
   for await (const event of stream) {
     assert.notEqual(event.type, "error", event.error?.errorMessage);
@@ -161,4 +162,174 @@ test("retains the system prompt and replays assistant tool calls and results on 
   assert.deepEqual(JSON.parse(stringField(call, 3)), args);
   assert.equal(stringField(history[2], 7), callId);
   assert.equal(stringField(history[2], 3), "file-value");
+});
+
+// #599: the provider must honor the SDK's admission hooks. An onPayload that
+// throws must produce NO protected send (no GetChatMessage fetch). onResponse
+// must observe the HTTP response. A non-undefined onPayload return is a
+// mutation we cannot apply to a binary body — it must refuse, not send anyway.
+test("a denied onPayload produces no protected send", async (t) => {
+  let fetchCalls = 0;
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  t.mock.method(globalThis, "fetch", async (url) => {
+    // The JWT/auth fetch is allowed; only the chat send must be denied.
+    if (url === "https://devin.invalid/exa.auth_pb.AuthService/GetUserJwt") {
+      return new Response(encodeMessage(1, Buffer.from("eyJtest.jwt")));
+    }
+    fetchCalls += 1;
+    return response(Buffer.concat([encodeString(3, "SHOULD-NOT-SEND"), encodeVarintField(5, 0)]));
+  });
+  const context = normalizeContext({ systemPrompt: "s", messages: [user("deny me")] });
+  const stream = streamDevin(model, context, {
+    apiKey: "synthetic-test-key",
+    env: { DEVIN_API_SERVER_URL: "https://devin.invalid" },
+    onPayload: () => { throw new Error("denied by admission"); },
+  });
+  for await (const _ of stream) { /* drain */ }
+  const result = await stream.result();
+  assert.equal(fetchCalls, 0, "denied request must not reach the transport");
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage ?? "", /denied by admission/);
+});
+
+test("onPayload returning a replacement refuses (binary body cannot be rewritten)", async (t) => {
+  let fetchCalls = 0;
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (url === "https://devin.invalid/exa.auth_pb.AuthService/GetUserJwt") {
+      return new Response(encodeMessage(1, Buffer.from("eyJtest.jwt")));
+    }
+    fetchCalls += 1;
+    return response(Buffer.concat([encodeString(3, "X"), encodeVarintField(5, 0)]));
+  });
+  const context = normalizeContext({ systemPrompt: "s", messages: [user("mutate me")] });
+  const stream = streamDevin(model, context, {
+    apiKey: "synthetic-test-key",
+    env: { DEVIN_API_SERVER_URL: "https://devin.invalid" },
+    onPayload: () => ({ tampered: true }),
+  });
+  for await (const _ of stream) { /* drain */ }
+  const result = await stream.result();
+  assert.equal(fetchCalls, 0);
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage ?? "", /cannot apply|refuse/i);
+});
+
+test("onResponse observes the HTTP response and onPayload sees the descriptor", async (t) => {
+  const requests = mockDevin(t);
+  const seen = { payload: null, status: null };
+  const context = normalizeContext({ systemPrompt: "sys", tools: [readTool], messages: [user("hi")] });
+  await complete(context, {
+    onPayload: (payload) => { seen.payload = payload; return undefined; },
+    onResponse: (resp) => { seen.status = resp.status; },
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(seen.status, 200);
+  assert.ok(seen.payload && seen.payload.endpoint.includes("GetChatMessage"));
+  assert.equal(seen.payload.provider, "devin");
+  assert.equal(seen.payload.messageCount, 1);
+  assert.equal(seen.payload.toolCount, 1);
+  // Content rules need the semantic request, not just counts — the
+  // descriptor carries the mapped messages/tools but no wire secrets.
+  assert.equal(seen.payload.messages.length, 1);
+  assert.equal(seen.payload.tools.length, 1);
+  assert.equal(seen.payload.tools[0].name, "read");
+  assert.deepEqual(
+    Object.keys(seen.payload).filter((k) => /apikey|jwt|secret|proto/i.test(k)),
+    [],
+  );
+});
+
+test("an onResponse denial cancels the response body and propagates", async (t) => {
+  let canceled = 0;
+  const requests = [];
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (url === "https://devin.invalid/exa.auth_pb.AuthService/GetUserJwt") {
+      return new Response(encodeMessage(1, Buffer.from("eyJtest.jwt")));
+    }
+    requests.push(url);
+    return new Response(
+      new ReadableStream({ cancel() { canceled += 1; } }),
+      { status: 200 },
+    );
+  });
+  const context = normalizeContext({ systemPrompt: "s", messages: [user("hi")] });
+  const stream = streamDevin(model, context, {
+    apiKey: "synthetic-test-key",
+    env: { DEVIN_API_SERVER_URL: "https://devin.invalid" },
+    onResponse: () => { throw new Error("response denied"); },
+  });
+  for await (const _ of stream) { /* drain */ }
+  const result = await stream.result();
+  assert.equal(requests.length, 1);
+  assert.equal(canceled, 1, "denied response body must be canceled");
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage ?? "", /response denied/);
+});
+
+test("options.fetch is used for BOTH auth and chat sends", async (t) => {
+  const calls = [];
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  const injected = async (url, opts) => {
+    calls.push(url);
+    if (url === "https://devin.invalid/exa.auth_pb.AuthService/GetUserJwt") {
+      return new Response(encodeMessage(1, Buffer.from("eyJtest.jwt")));
+    }
+    return response(Buffer.concat([encodeString(3, "OK"), encodeVarintField(5, 0)]));
+  };
+  // Do NOT mock globalThis.fetch — prove the injected fetch is used even when
+  // the global would fail.
+  const context = normalizeContext({ systemPrompt: "s", messages: [user("hi")] });
+  await complete(context, { fetch: injected });
+  assert.ok(calls.some((u) => u.includes("GetUserJwt")), "auth must use injected fetch");
+  assert.ok(calls.some((u) => u.includes("GetChatMessage")), "chat must use injected fetch");
+});
+
+test("caller headers cannot override required Connect framing (any casing)", async (t) => {
+  const seenHeaders = [];
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  t.mock.method(globalThis, "fetch", async (url, opts) => {
+    if (url === "https://devin.invalid/exa.auth_pb.AuthService/GetUserJwt") {
+      return new Response(encodeMessage(1, Buffer.from("eyJtest.jwt")));
+    }
+    const h = opts?.headers || {};
+    seenHeaders.push(Array.isArray(h) ? Object.fromEntries(h) : h);
+    return response(Buffer.concat([encodeString(3, "OK"), encodeVarintField(5, 0)]));
+  });
+  const context = normalizeContext({ systemPrompt: "s", messages: [user("hi")] });
+  await complete(context, {
+    headers: { "content-type": "text/evil", "x-custom": "ok", "connect-protocol-version": "99" },
+  });
+  const sent = seenHeaders[0];
+  const REQUIRED = new Set([
+    "content-type", "connect-protocol-version",
+    "connect-content-encoding", "connect-accept-encoding",
+  ]);
+  const CANONICAL = new Set([
+    "Content-Type", "Connect-Protocol-Version",
+    "Connect-Content-Encoding", "Connect-Accept-Encoding",
+  ]);
+  // Assert on raw entries: lowercasing into a map would collapse a smuggled
+  // duplicate (e.g. "content-type" + "Content-Type") into one winner.
+  const entries = Object.entries(sent);
+  const forbidden = entries.filter(
+    ([k]) => REQUIRED.has(k.toLowerCase()) && !CANONICAL.has(k),
+  );
+  assert.deepEqual(forbidden, [], "caller-cased variants of required names must not reach the wire");
+  for (const [name, want] of [
+    ["Content-Type", "application/connect+proto"],
+    ["Connect-Protocol-Version", "1"],
+    ["Connect-Content-Encoding", "gzip"],
+    ["Connect-Accept-Encoding", "gzip"],
+  ]) {
+    assert.equal(sent[name], want, `${name} must be the required value`);
+    assert.equal(entries.filter(([k]) => k === name).length, 1, `${name} must appear exactly once`);
+  }
+  assert.equal(sent["x-custom"], "ok");
 });

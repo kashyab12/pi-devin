@@ -244,10 +244,14 @@ async function* streamChatEvents(args: {
   tools?: ToolDef[];
   maxOutputTokens?: number;
   signal?: AbortSignal;
+  options?: SimpleStreamOptions;
+  model?: Model<Api>;
 }): AsyncGenerator<CloudChatEvent> {
   const host = args.host.replace(/\/$/, "");
-  const userJwt = await getCachedUserJwt(args.apiKey, host, args.signal);
+  const doFetch = args.options?.fetch ?? globalThis.fetch;
+  const userJwt = await getCachedUserJwt(args.apiKey, host, args.signal, doFetch);
   const ids = sessionIds(args.apiKey, host);
+  const promptId = randomUUID();
   const proto = buildGetChatMessageRequest({
     apiKey: args.apiKey,
     userJwt,
@@ -256,16 +260,66 @@ async function* streamChatEvents(args: {
     messages: args.messages,
     tools: args.tools,
     cascadeId: ids.cascadeId,
-    promptId: randomUUID(),
+    promptId,
     sessionId: ids.sessionId,
     requestId: BigInt(Date.now()),
     triggerId: randomUUID(),
     maxOutputTokens: args.maxOutputTokens,
   });
 
-  const resp = await fetch(`${host}/exa.api_server_pb.ApiServerService/GetChatMessage`, {
+  // Admission surface: the request body is protobuf, so onPayload cannot
+  // meaningfully rewrite it — but it CAN observe a structured descriptor and,
+  // critically, THROW to deny the send. A denial here must produce no protected
+  // request (shared/planning#599). Surface the semantic request, not the wire
+  // bytes, so a governor/hook sees what is about to be sent.
+  if (args.options?.onPayload && args.model) {
+    const descriptor = {
+      provider: "devin",
+      api: "devin-local",
+      endpoint: `${host}/exa.api_server_pb.ApiServerService/GetChatMessage`,
+      modelUid: args.modelUid,
+      systemPrompt: args.systemPrompt,
+      messages: args.messages,
+      tools: args.tools,
+      messageCount: args.messages.length,
+      toolCount: args.tools?.length ?? 0,
+      maxOutputTokens: args.maxOutputTokens,
+      sessionId: ids.sessionId,
+      promptId,
+    };
+    const replacement = await args.options.onPayload(descriptor, args.model);
+    if (replacement !== undefined) {
+      // Payload replacement is not supported for the binary Connect-RPC body;
+      // a non-undefined return is treated as a deny/mutation request we cannot
+      // honor — refuse rather than silently send the original.
+      throw new Error(
+        "devin provider: onPayload returned a replacement payload, which this binary Connect-RPC transport cannot apply. Deny by throwing, or return undefined to allow unchanged.",
+      );
+    }
+  }
+
+  // Header names are case-insensitive. Strip any caller header (in any casing)
+  // that targets a transport-required Connect framing name, so a caller cannot
+  // inject a duplicate and corrupt the framed body.
+  const REQUIRED = new Set([
+    "content-type",
+    "connect-protocol-version",
+    "connect-content-encoding",
+    "connect-accept-encoding",
+  ]);
+  const callerHeaders = Object.fromEntries(
+    Object.entries(args.options?.headers ?? {}).filter(
+      ([k, v]) => v !== null && !REQUIRED.has(k.toLowerCase()),
+    ),
+  ) as Record<string, string>;
+  const resp = await doFetch(`${host}/exa.api_server_pb.ApiServerService/GetChatMessage`, {
     method: "POST",
     headers: {
+      // Caller headers first; the required Connect-RPC framing headers are
+      // applied last so a caller cannot silently break the transport contract.
+      // A null caller value would suppress a same-named header — none of the
+      // required names are optional, so this is safe.
+      ...callerHeaders,
       "Content-Type": "application/connect+proto",
       "Connect-Protocol-Version": "1",
       "Connect-Content-Encoding": "gzip",
@@ -274,6 +328,22 @@ async function* streamChatEvents(args: {
     body: new Uint8Array(frameConnectStream(proto, true)),
     signal: args.signal,
   });
+  if (args.options?.onResponse && args.model) {
+    const headers: Record<string, string> = {};
+    resp.headers.forEach((v, k) => { headers[k] = v; });
+    try {
+      await args.options.onResponse({ status: resp.status, headers }, args.model);
+    } catch (err) {
+      // A hook denial discards the response: release the connection rather
+      // than leaving the body stream open.
+      try {
+        await resp.body?.cancel();
+      } catch {
+        // best effort — the hook error is the outcome that propagates
+      }
+      throw err;
+    }
+  }
   if (!resp.ok) {
     throw new Error(`GetChatMessage HTTP ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
   }
@@ -453,6 +523,8 @@ export function streamDevin(
         tools: mapped.tools.length > 0 ? mapped.tools : undefined,
         maxOutputTokens: options?.maxTokens,
         signal: options?.signal,
+        options,
+        model,
       })) {
         if (event.kind === "text") {
           closeThinking();

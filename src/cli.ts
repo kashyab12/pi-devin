@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { execFile, spawn } from "node:child_process";
@@ -13,12 +13,6 @@ function candidateBins(): string[] {
     // load (e.g. by the host process) is still honoured.
     process.env.DEVIN_CLI,
     ...(process.platform === "win32" ? [
-    // Devin-fed installation.
-    join(localAppData, "devin/devin-fed/bin/devin-fed.exe"),
-    join(homedir(), ".local/bin/devin.cmd"),
-    join(homedir(), ".devin/bin/devin.cmd"),
-    join(homedir(), ".local/bin/devin.bat"),
-    join(homedir(), ".devin/bin/devin.bat"),
     // Official installer location (%LOCALAPPDATA%\devin\cli\bin\devin.exe)
     join(localAppData, "devin/cli/bin/devin.exe"),
     // Devin Desktop (Windsurf-based) bundled CLI, per-user install
@@ -52,8 +46,8 @@ function isFile(path: string): boolean {
 
 export function findDevinBinInPath(searchPath = process.env.PATH ?? "", platform = process.platform): string | null {
   const names = platform === "win32"
-    ? ["devin-fed.exe", "devin-fed.cmd", "devin-fed.bat", "devin.exe", "devin.cmd", "devin.bat", "devin"]
-    : ["devin-fed", "devin"];
+    ? ["devin.exe", "devin.cmd", "devin.bat", "devin"]
+    : ["devin"];
   const separator = platform === "win32" ? ";" : delimiter;
   for (const directory of searchPath.split(separator).filter(Boolean)) {
     for (const name of names) {
@@ -62,16 +56,6 @@ export function findDevinBinInPath(searchPath = process.env.PATH ?? "", platform
     }
   }
   return null;
-}
-
-export function isFedCli(bin: string | null): boolean {
-  if (/(?:^|[\\/])devin-fed(?:\.(?:exe|cmd|bat))?$/i.test(bin ?? "")) return true;
-  if (!bin || !/\.(?:cmd|bat)$/i.test(bin)) return false;
-  try {
-    return /devin-fed(?:\.exe)?/i.test(readFileSync(bin, "utf8"));
-  } catch {
-    return false;
-  }
 }
 
 export function findDevinBin(): string | null {
@@ -99,8 +83,8 @@ export async function whichDevin(): Promise<string | null> {
   const isWindows = process.platform === "win32";
   const locator = isWindows ? "where.exe" : "/usr/bin/which";
   const candidates = isWindows
-    ? ["devin-fed.exe", "devin-fed.cmd", "devin-fed.bat", "devin.exe", "devin.cmd", "devin.bat", "devin"]
-    : ["devin-fed", "devin"];
+    ? ["devin.exe", "devin.cmd", "devin.bat", "devin"]
+    : ["devin"];
   for (const candidate of candidates) {
     try {
       const { stdout } = await execFileAsync(locator, [candidate], { timeout: 5_000 });

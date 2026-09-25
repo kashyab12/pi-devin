@@ -20,19 +20,37 @@ Those models are available through the local Devin CLI. This package uses that C
 - Node 22.19+ (required by Pi 0.86)
 - A signed-in [Devin CLI](https://docs.devin.ai/cli) (`devin auth status`)
 
-The package uses the local CLI for authentication and catalog discovery, so
-standard Devin installations keep their existing credential and endpoint
-selection. On Windows, `devin-fed.exe` and a `.cmd` or `.bat` wrapper that
-forwards to it select the fed credential store and API server. A wrapper also
-satisfies Herdr's process-recognition requirement; it does not replace the
-provider transport.
-
 The CLI binary is resolved from an explicit `$DEVIN_CLI`, known platform paths,
-and the platform's command locator. Linux and macOS use the standard Devin
-paths; Windows also checks the installed fed binary and common user-local
-wrappers.
+and the platform's command locator. Windows checks the CLI installer and Devin
+Desktop locations, then uses `where.exe` for standard `devin` names. Native
+executables and `.cmd`/`.bat` wrappers are supported, including paths with
+spaces. Set `DEVIN_CLI` when the executable or wrapper uses a different name.
 
-On Windows, discovery checks the CLI installer and Devin Desktop locations, then uses `where.exe` to search PATH. Native executables and `.cmd`/`.bat` wrappers are supported, including paths with spaces. `DEVIN_CLI` takes precedence on every platform.
+Set `DEVIN_CREDENTIALS_PATH` to use a non-default credentials file. Its API key
+and `api_server_url` are read together, so a fed installation does not need
+special executable-name detection. For example, in PowerShell:
+
+```powershell
+$env:DEVIN_CLI = "C:\tools\devin-fed.cmd"
+$env:DEVIN_CREDENTIALS_PATH = "C:\path\to\fed\credentials.toml"
+```
+
+Point `DEVIN_CREDENTIALS_PATH` at the file created by the selected CLI. The
+override must support the `auth status`, `auth login`, and `models list
+--format json` commands used by this package.
+
+These variables configure this Pi provider. Herdr process detection is
+separate: run `herdr integration install pi` for Herdr to track a Pi session.
+To run a fed CLI through a host-visible wrapper on Linux or macOS, set
+`HERDR_AGENT=devin` only for that wrapper:
+
+```sh
+HERDR_AGENT=devin /path/to/devin-fed
+```
+
+Herdr then uses its existing Devin agent detection; this does not require a
+separate Devin-fed agent kind. Herdr documents this hint in its [agent
+detection guide](https://herdr.dev/docs/agents/).
 
 ## Install
 
@@ -70,9 +88,9 @@ Restart Pi or run `/reload`.
 ```
 
 `/login devin` runs `devin auth login` when the active CLI credential file is
-missing. Standard Devin credentials remain under the CLI's normal local path;
-`devin-fed` uses its fed credential file and API server. Existing CLI or Desktop
-login state is reused.
+missing. The default is `~/.local/share/devin/credentials.toml`; set
+`DEVIN_CREDENTIALS_PATH` when the selected CLI stores credentials elsewhere.
+Existing CLI or Desktop login state is reused.
 
 Commands:
 

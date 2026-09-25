@@ -26,6 +26,7 @@ function setup(t) {
   const previous = { ...process.env };
   process.env.XDG_CACHE_HOME = root;
   process.env.TEST_CATALOG = JSON.stringify(catalog);
+  delete process.env.DEVIN_CREDENTIALS_PATH;
   delete process.env.PI_OFFLINE;
   delete process.env.TEST_CLI_EXIT;
   fs.writeFileSync(counter, "");
@@ -40,7 +41,7 @@ function setup(t) {
   t.after(async () => {
     await hooks.session_shutdown?.();
     t.mock.restoreAll(); syncBuiltinESMExports();
-    for (const key of ["XDG_CACHE_HOME", "PI_OFFLINE", "TEST_CATALOG", "TEST_CLI_EXIT"]) {
+    for (const key of ["XDG_CACHE_HOME", "DEVIN_CREDENTIALS_PATH", "PI_OFFLINE", "TEST_CATALOG", "TEST_CLI_EXIT"]) {
       if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
     }
   });

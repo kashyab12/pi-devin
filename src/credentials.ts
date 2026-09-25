@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { findDevinBin, isFedCli, runDevin } from "./cli.ts";
+import { runDevin } from "./cli.ts";
 
 export interface DevinCredentials {
   apiKey: string;
@@ -25,14 +25,6 @@ export function resolveStreamAuth(
 }
 
 const DEFAULT_CREDENTIALS_PATH = join(homedir(), ".local/share/devin/credentials.toml");
-const FED_CREDENTIALS_PATH = join(
-  process.env.APPDATA || join(homedir(), "AppData/Roaming"),
-  "devin/devin-fed/credentials.toml",
-);
-
-export function credentialsPathForCli(bin: string | null): string {
-  return isFedCli(bin) ? FED_CREDENTIALS_PATH : DEFAULT_CREDENTIALS_PATH;
-}
 
 function parseTomlStrings(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -44,7 +36,7 @@ function parseTomlStrings(text: string): Record<string, string> {
 }
 
 export function credentialsPath(): string {
-  return credentialsPathForCli(findDevinBin());
+  return process.env.DEVIN_CREDENTIALS_PATH || DEFAULT_CREDENTIALS_PATH;
 }
 
 export function readCredentials(path = credentialsPath()): DevinCredentials | null {

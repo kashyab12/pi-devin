@@ -3,57 +3,19 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findDevinBinInPath, isFedCli } from "../src/cli.ts";
-import { credentialsPathForCli, readCredentials, resolveStreamAuth } from "../src/credentials.ts";
+import { findDevinBinInPath } from "../src/cli.ts";
+import { credentialsPath, readActiveCredentials, readCredentials, resolveStreamAuth } from "../src/credentials.ts";
 
-test("recognizes fed CLI paths on Windows and POSIX", () => {
-  assert.equal(isFedCli("C:\\Users\\nick\\AppData\\Local\\devin\\devin-fed\\bin\\devin-fed.exe"), true);
-  assert.equal(isFedCli("/home/nick/.local/bin/devin"), false);
-});
-
-test("recognizes a Herdr-compatible wrapper that forwards to devin-fed", () => {
+test("discovers the standard CLI names on PATH without recognizing fed-specific names", () => {
   const directory = mkdtempSync(join(tmpdir(), "pi-devin-"));
-  const wrapper = join(directory, "devin.cmd");
-  writeFileSync(wrapper, '@echo off\n"C:\\devin-fed.exe" %*\n');
-  try {
-    assert.equal(isFedCli(wrapper), true);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("keeps ordinary Devin wrappers on the standard credential path", () => {
-  const directory = mkdtempSync(join(tmpdir(), "pi-devin-"));
-  const wrapper = join(directory, "devin.cmd");
-  writeFileSync(wrapper, '@echo off\n"C:\\devin.exe" %*\n');
-  try {
-    assert.equal(isFedCli(wrapper), false);
-    assert.match(credentialsPathForCli(wrapper), /\.local[\\/]share[\\/]devin[\\/]credentials\.toml$/);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("selects the fed credential path for the fed CLI", () => {
-  assert.match(
-    credentialsPathForCli("C:\\Users\\nick\\AppData\\Local\\devin\\devin-fed\\bin\\devin-fed.exe"),
-    /devin[\\/]devin-fed[\\/]credentials\.toml$/,
-  );
-  assert.match(
-    credentialsPathForCli("/home/nick/.local/bin/devin"),
-    /\.local[\\/]share[\\/]devin[\\/]credentials\.toml$/,
-  );
-});
-
-test("discovers a PATH-only fed CLI before choosing its credential store", () => {
-  const directory = mkdtempSync(join(tmpdir(), "pi-devin-"));
-  const bin = join(directory, "devin-fed.exe");
+  const bin = join(directory, "devin.exe");
   writeFileSync(bin, "");
   try {
     const found = findDevinBinInPath(directory, "win32");
     assert.equal(found, bin);
-    assert.equal(isFedCli(found), true);
-    assert.match(credentialsPathForCli(found), /devin[\\/]devin-fed[\\/]credentials\.toml$/);
+    rmSync(bin);
+    writeFileSync(join(directory, "devin-fed.exe"), "");
+    assert.equal(findDevinBinInPath(directory, "win32"), null);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -61,7 +23,7 @@ test("discovers a PATH-only fed CLI before choosing its credential store", () =>
 
 test("ignores a directory named like a Devin CLI in PATH", () => {
   const directory = mkdtempSync(join(tmpdir(), "pi-devin-"));
-  mkdirSync(join(directory, "devin-fed.exe"));
+  mkdirSync(join(directory, "devin.exe"));
   try {
     assert.equal(findDevinBinInPath(directory, "win32"), null);
   } finally {
@@ -69,10 +31,33 @@ test("ignores a directory named like a Devin CLI in PATH", () => {
   }
 });
 
-test("reads API credentials from a fed credential file", () => {
+test("uses DEVIN_CREDENTIALS_PATH to read a fed credential file and its endpoint", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "pi-devin-"));
   const credentials = join(directory, "devin-fed", "credentials.toml");
   mkdirSync(join(directory, "devin-fed"), { recursive: true });
+  writeFileSync(credentials, 'api_key = "fed-key"\napi_server_url = "https://fed.example"\n');
+  const previous = process.env.DEVIN_CREDENTIALS_PATH;
+  process.env.DEVIN_CREDENTIALS_PATH = credentials;
+  t.after(() => {
+    if (previous === undefined) delete process.env.DEVIN_CREDENTIALS_PATH;
+    else process.env.DEVIN_CREDENTIALS_PATH = previous;
+    rmSync(directory, { recursive: true, force: true });
+  });
+  assert.equal(credentialsPath(), credentials);
+  const active = readActiveCredentials();
+  assert.deepEqual(resolveStreamAuth(undefined, undefined, active), {
+    apiKey: "fed-key",
+    host: "https://fed.example",
+  });
+  assert.deepEqual(resolveStreamAuth("explicit-key", "https://custom.example/", active), {
+    apiKey: "explicit-key",
+    host: "https://custom.example",
+  });
+});
+
+test("reads credentials from an explicitly supplied path", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-devin-"));
+  const credentials = join(directory, "credentials.toml");
   writeFileSync(credentials, 'api_key = "fed-key"\napi_server_url = "https://fed.example"\n');
   try {
     assert.deepEqual(readCredentials(credentials), {

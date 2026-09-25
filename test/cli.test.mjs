@@ -46,15 +46,17 @@ test("finds the Windows installer binary and ignores a directory override", { sk
   assert.equal(findDevinBin(), binary);
 });
 
-test("finds user-local Herdr wrappers", { skip: process.platform !== "win32" }, (t) => {
+test("synchronous startup discovery finds the standard CLI on PATH", { skip: process.platform !== "win32" }, (t) => {
   const directory = fixture(t);
   delete process.env.DEVIN_CLI;
-  process.env.USERPROFILE = directory;
   process.env.LOCALAPPDATA = join(directory, "localappdata");
   process.env.ProgramFiles = join(directory, "program-files");
-  const wrapper = join(directory, ".local", "bin", "devin.cmd");
-  mkdirSync(dirname(wrapper), { recursive: true }); writeFileSync(wrapper, '@echo off\necho Devin\n');
-  assert.equal(findDevinBin(), wrapper);
+  const bin = join(directory, "path bin");
+  mkdirSync(bin);
+  const binary = join(bin, "devin.exe");
+  writeFileSync(binary, "");
+  process.env.PATH = bin;
+  assert.equal(findDevinBin(), binary);
 });
 
 test("Windows PATH lookup uses where.exe and reads multiple results", { skip: process.platform !== "win32" }, async (t) => {

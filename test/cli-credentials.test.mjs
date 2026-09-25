@@ -4,7 +4,7 @@ import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findDevinBinInPath, isFedCli } from "../src/cli.ts";
-import { credentialsPathForCli, DEVIN_CLI_AUTH_MARKER, readCredentials, resolveStreamAuth } from "../src/credentials.ts";
+import { credentialsPathForCli, readCredentials, resolveStreamAuth } from "../src/credentials.ts";
 
 test("recognizes fed CLI paths on Windows and POSIX", () => {
   assert.equal(isFedCli("C:\\Users\\nick\\AppData\\Local\\devin\\devin-fed\\bin\\devin-fed.exe"), true);
@@ -59,6 +59,16 @@ test("discovers a PATH-only fed CLI before choosing its credential store", () =>
   }
 });
 
+test("ignores a directory named like a Devin CLI in PATH", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-devin-"));
+  mkdirSync(join(directory, "devin-fed.exe"));
+  try {
+    assert.equal(findDevinBinInPath(directory, "win32"), null);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("reads API credentials from a fed credential file", () => {
   const directory = mkdtempSync(join(tmpdir(), "pi-devin-"));
   const credentials = join(directory, "devin-fed", "credentials.toml");
@@ -100,7 +110,7 @@ test("keeps explicit API keys separate from local CLI credentials", () => {
     apiKey: "explicit-key",
     host: "https://custom.example",
   });
-  assert.deepEqual(resolveStreamAuth(DEVIN_CLI_AUTH_MARKER, undefined, standardCredentials), {
+  assert.deepEqual(resolveStreamAuth("standard-key", undefined, standardCredentials), {
     apiKey: "standard-key",
     host: "https://standard.example",
   });

@@ -3,8 +3,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { findDevinBin, isFedCli, runDevin } from "./cli.ts";
 
-export const DEVIN_CLI_AUTH_MARKER = "devin-cli";
-
 export interface DevinCredentials {
   apiKey: string;
   apiServerUrl: string;
@@ -19,9 +17,9 @@ export function resolveStreamAuth(
   credentials: DevinCredentials | null,
 ): { apiKey: string | undefined; host: string } {
   const useCredentials = Boolean(credentials) &&
-    (!apiKey || apiKey === DEVIN_CLI_AUTH_MARKER || apiKey === credentials?.apiKey);
+    (!apiKey || apiKey === credentials?.apiKey);
   return {
-    apiKey: useCredentials ? credentials?.apiKey : apiKey === DEVIN_CLI_AUTH_MARKER ? undefined : apiKey,
+    apiKey: useCredentials ? credentials?.apiKey : apiKey,
     host: (apiServerUrl || (useCredentials ? credentials?.apiServerUrl : undefined) || "https://server.codeium.com").replace(/\/$/, ""),
   };
 }

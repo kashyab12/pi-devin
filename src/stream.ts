@@ -9,6 +9,7 @@ import {
   type TranscriptContext,
   calculateCost,
   createAssistantMessageEventStream,
+  parseStreamingJson,
 } from "@earendil-works/pi-ai";
 import { mapContextToChat, type ChatHistoryItem, type ContentPart, type ToolDef } from "./context-map.ts";
 import { readActiveCredentials, resolveStreamAuth } from "./credentials.ts";
@@ -212,12 +213,12 @@ function decodeUsage(buf: Buffer): CloudChatEvent | null {
     else if (metric.includes("cached") || metric.includes("cache_read")) cachedInputTokens = n;
     else if (metric.includes("cache_creation")) cacheCreationInputTokens = n;
   }
-  if (promptTokens === undefined && completionTokens === undefined) return null;
+  if ([promptTokens, completionTokens, cachedInputTokens, cacheCreationInputTokens].every((n) => n === undefined)) return null;
   return {
     kind: "usage",
     promptTokens,
     completionTokens,
-    totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0),
+    totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0) + (cachedInputTokens ?? 0) + (cacheCreationInputTokens ?? 0),
     cachedInputTokens,
     cacheCreationInputTokens,
   };
@@ -360,7 +361,7 @@ async function* streamChatEvents(args: {
       // ignore
     }
     try {
-      void resp.body?.cancel();
+      await resp.body?.cancel();
     } catch {
       // ignore
     }
@@ -425,11 +426,7 @@ export function streamDevin(
       if (toolIndex < 0) return;
       const block = output.content[toolIndex];
       if (block.type === "toolCall") {
-        try {
-          block.arguments = JSON.parse(partialJson);
-        } catch {
-          // keep last parsed object
-        }
+        block.arguments = parseStreamingJson(partialJson);
         stream.push({
           type: "toolcall_end",
           contentIndex: toolIndex,
@@ -499,11 +496,7 @@ export function streamDevin(
           partialJson += event.argsDelta;
           const block = output.content[toolIndex];
           if (block.type === "toolCall") {
-            try {
-              block.arguments = JSON.parse(partialJson);
-            } catch {
-              // incomplete json
-            }
+            block.arguments = parseStreamingJson(partialJson);
           }
           stream.push({ type: "toolcall_delta", contentIndex: toolIndex, delta: event.argsDelta, partial: output });
         } else if (event.kind === "finish") {
@@ -513,11 +506,14 @@ export function streamDevin(
           output.stopReason =
             event.reason === "tool_calls" ? "toolUse" : event.reason === "length" ? "length" : "stop";
         } else if (event.kind === "usage") {
-          output.usage.input = event.promptTokens ?? 0;
-          output.usage.output = event.completionTokens ?? 0;
-          output.usage.cacheRead = event.cachedInputTokens ?? 0;
-          output.usage.cacheWrite = event.cacheCreationInputTokens ?? 0;
-          output.usage.totalTokens = event.totalTokens ?? output.usage.input + output.usage.output;
+          // Empty trailers must not erase usage already received. Metrics are
+          // snapshots, and a frame may contain only some of the components.
+          if (!event.totalTokens) continue;
+          output.usage.input = event.promptTokens ?? output.usage.input;
+          output.usage.output = event.completionTokens ?? output.usage.output;
+          output.usage.cacheRead = event.cachedInputTokens ?? output.usage.cacheRead;
+          output.usage.cacheWrite = event.cacheCreationInputTokens ?? output.usage.cacheWrite;
+          output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
           calculateCost(model, output.usage);
         }
       }

@@ -1,7 +1,8 @@
-import { readdir } from "node:fs/promises";
+import { readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 
-const files = (await readdir("test")).filter((file) => file.endsWith(".test.mjs")).map((file) => join("test", file));
-const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "--test", ...files], { stdio: "inherit" });
-child.on("exit", (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
+const files = readdirSync("test").filter((file) => file.endsWith(".test.mjs")).sort().map((file) => join("test", file));
+const result = spawnSync(process.execPath, ["--import", "tsx", "--test", ...files], { stdio: "inherit" });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);

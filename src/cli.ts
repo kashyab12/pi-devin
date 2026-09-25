@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { execFile, spawn } from "node:child_process";
@@ -6,43 +6,66 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const WINDOWS_FED_BIN = join(
-  process.env.LOCALAPPDATA || join(homedir(), "AppData/Local"),
-  "devin/devin-fed/bin/devin-fed.exe",
-);
-const WINDOWS_DEVIN_WRAPPERS = [
-  join(homedir(), ".local/bin/devin.cmd"),
-  join(homedir(), ".devin/bin/devin.cmd"),
-  join(homedir(), ".local/bin/devin.bat"),
-  join(homedir(), ".devin/bin/devin.bat"),
-];
+function candidateBins(): string[] {
+  const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData/Local");
+  return [
+    // Explicit override always wins. Read lazily so a value set after module
+    // load (e.g. by the host process) is still honoured.
+    process.env.DEVIN_CLI,
+    ...(process.platform === "win32" ? [
+    // Devin-fed installation.
+    join(localAppData, "devin/devin-fed/bin/devin-fed.exe"),
+    join(homedir(), ".local/bin/devin.cmd"),
+    join(homedir(), ".devin/bin/devin.cmd"),
+    join(homedir(), ".local/bin/devin.bat"),
+    join(homedir(), ".devin/bin/devin.bat"),
+    // Official installer location (%LOCALAPPDATA%\devin\cli\bin\devin.exe)
+    join(localAppData, "devin/cli/bin/devin.exe"),
+    // Devin Desktop (Windsurf-based) bundled CLI, per-user install
+    join(localAppData, "Programs/Devin/resources/app/extensions/windsurf/devin/bin/devin.exe"),
+    // Devin Desktop bundled CLI, machine-wide install
+    process.env.ProgramFiles &&
+      join(process.env.ProgramFiles, "Devin/resources/app/extensions/windsurf/devin/bin/devin.exe"),
+    // Set by the official Windows installer when it completes normally.
+    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "devin/bin/devin.exe"),
+    // Manual fallback for installs that could not finish while Devin was running.
+    join(homedir(), ".devin-cli/devin.exe"),
+    ] : [
+    join(homedir(), ".local/bin/devin"),
+    join(homedir(), ".devin/bin/devin"),
+    "/opt/homebrew/bin/devin",
+    "/usr/local/bin/devin",
+    "/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin",
+    ]),
+  ].filter((p): p is string => Boolean(p));
+}
 
-const KNOWN_BINS = [
-  process.env.DEVIN_CLI,
-  ...(process.platform === "win32" ? [WINDOWS_FED_BIN, ...WINDOWS_DEVIN_WRAPPERS] : []),
-  join(homedir(), ".local/bin/devin"),
-  join(homedir(), ".devin/bin/devin"),
-  "/opt/homebrew/bin/devin",
-  "/usr/local/bin/devin",
-  "/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin",
-].filter((p): p is string => Boolean(p));
+let cachedBin: string | null | undefined;
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
 
 export function findDevinBinInPath(searchPath = process.env.PATH ?? "", platform = process.platform): string | null {
   const names = platform === "win32"
-    ? ["devin-fed.exe", "devin-fed.cmd", "devin-fed.bat", "devin.cmd", "devin.bat", "devin.exe", "devin"]
-    : ["devin"];
+    ? ["devin-fed.exe", "devin-fed.cmd", "devin-fed.bat", "devin.exe", "devin.cmd", "devin.bat", "devin"]
+    : ["devin-fed", "devin"];
   const separator = platform === "win32" ? ";" : delimiter;
   for (const directory of searchPath.split(separator).filter(Boolean)) {
     for (const name of names) {
       const bin = join(directory, name);
-      if (existsSync(bin)) return bin;
+      if (isFile(bin)) return bin;
     }
   }
   return null;
 }
 
 export function isFedCli(bin: string | null): boolean {
-  if (/(?:^|[\\/])devin-fed(?:\.exe)?$/i.test(bin ?? "")) return true;
+  if (/(?:^|[\\/])devin-fed(?:\.(?:exe|cmd|bat))?$/i.test(bin ?? "")) return true;
   if (!bin || !/\.(?:cmd|bat)$/i.test(bin)) return false;
   try {
     return /devin-fed(?:\.exe)?/i.test(readFileSync(bin, "utf8"));
@@ -51,12 +74,12 @@ export function isFedCli(bin: string | null): boolean {
   }
 }
 
-let cachedBin: string | null | undefined;
-
 export function findDevinBin(): string | null {
+  // An explicit override must take effect even after a successful discovery.
+  if (process.env.DEVIN_CLI && isFile(process.env.DEVIN_CLI)) return process.env.DEVIN_CLI;
   if (cachedBin !== undefined) return cachedBin;
-  for (const bin of KNOWN_BINS) {
-    if (existsSync(bin)) {
+  for (const bin of candidateBins()) {
+    if (isFile(bin)) {
       cachedBin = bin;
       return bin;
     }
@@ -69,21 +92,25 @@ export function clearDevinBinCache(): void {
   cachedBin = undefined;
 }
 
-function needsWindowsShell(bin: string): boolean {
-  return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(bin);
-}
-
 export async function whichDevin(): Promise<string | null> {
   const known = findDevinBin();
   if (known) return known;
-  const locator = process.platform === "win32" ? "where.exe" : "/usr/bin/which";
-  for (const name of process.platform === "win32" ? ["devin-fed.exe", "devin", "devin.exe"] : ["devin"]) {
+  // Windows has no `which`; use `where` and probe the returned paths directly.
+  const isWindows = process.platform === "win32";
+  const locator = isWindows ? "where.exe" : "/usr/bin/which";
+  const candidates = isWindows
+    ? ["devin-fed.exe", "devin-fed.cmd", "devin-fed.bat", "devin.exe", "devin.cmd", "devin.bat", "devin"]
+    : ["devin-fed", "devin"];
+  for (const candidate of candidates) {
     try {
-      const { stdout } = await execFileAsync(locator, [name], { timeout: 5_000 });
-      const path = stdout.split(/\r?\n/).find((candidate) => candidate.trim())?.trim();
-      if (path && existsSync(path)) {
-        cachedBin = path;
-        return path;
+      const { stdout } = await execFileAsync(locator, [candidate], { timeout: 5_000 });
+      // `where` may return several lines; take the first existing one.
+      for (const line of stdout.split(/\r?\n/)) {
+        const path = line.trim();
+        if (path && isFile(path)) {
+          cachedBin = path;
+          return path;
+        }
       }
     } catch {
       // not on PATH
@@ -103,9 +130,18 @@ export async function runDevin(
     );
   }
 
+  // Batch wrappers need cmd.exe. Quote paths with spaces, and reject shell
+  // expansion characters rather than interpreting them as part of a command.
+  const wrapper = process.platform === "win32" && /\.(cmd|bat)$/i.test(bin);
+  if (wrapper && [bin, ...args].some((part) => /["%!\r\n]/.test(part))) {
+    throw new Error("Unsupported shell characters in Devin wrapper path or arguments. Set DEVIN_CLI to devin.exe.");
+  }
+  const executable = wrapper ? process.env.ComSpec || "cmd.exe" : bin;
+  const commandArgs = wrapper ? ["/d", "/s", "/c", `"${[bin, ...args].map((part) => `"${part}"`).join(" ")}"`] : args;
+
   if (opts.inheritStdio) {
     return await new Promise((resolve, reject) => {
-      const child = spawn(bin, args, { stdio: "inherit", shell: needsWindowsShell(bin) });
+      const child = spawn(executable, commandArgs, { stdio: "inherit", windowsVerbatimArguments: wrapper });
       child.on("error", reject);
       child.on("close", (code) => {
         resolve({ stdout: "", stderr: "", code: code ?? 1 });
@@ -114,10 +150,10 @@ export async function runDevin(
   }
 
   try {
-    const { stdout, stderr } = await execFileAsync(bin, args, {
+    const { stdout, stderr } = await execFileAsync(executable, commandArgs, {
       timeout: opts.timeoutMs ?? 30_000,
       maxBuffer: 8 * 1024 * 1024,
-      shell: needsWindowsShell(bin),
+      windowsVerbatimArguments: wrapper,
     });
     return { stdout, stderr, code: 0 };
   } catch (error) {

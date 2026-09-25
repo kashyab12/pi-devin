@@ -1,49 +1,58 @@
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-
-type Runtime = {
-  authStatus: typeof import("../src/credentials.ts").authStatus;
-  DEVIN_CLI_AUTH_MARKER: typeof import("../src/credentials.ts").DEVIN_CLI_AUTH_MARKER;
-  loginWithCli: typeof import("../src/credentials.ts").loginWithCli;
-  readActiveCredentials: typeof import("../src/credentials.ts").readActiveCredentials;
-  whichDevin: typeof import("../src/cli.ts").whichDevin;
-  devinVersion: typeof import("../src/cli.ts").devinVersion;
-  FALLBACK_MODELS: typeof import("../src/models.ts").FALLBACK_MODELS;
-  loadCliCatalog: typeof import("../src/models.ts").loadCliCatalog;
-  modelsFromCatalog: typeof import("../src/models.ts").modelsFromCatalog;
-  CLIENT_IDE: typeof import("../src/metadata.ts").CLIENT_IDE;
-  CLIENT_VERSION: typeof import("../src/metadata.ts").CLIENT_VERSION;
-  streamDevin: typeof import("../src/stream.ts").streamDevin;
-};
-
-let runtime: Runtime | undefined;
+import { authStatus, loginWithCli, readCredentials } from "../src/credentials.js";
+import { whichDevin, devinVersion } from "../src/cli.js";
+import {
+  type CachedDevinCatalog,
+  isUsableCatalog,
+  isCatalogCacheFresh,
+  readCatalogCache,
+  writeCatalogCache,
+} from "../src/catalog-cache.js";
+import { FALLBACK_MODELS, loadCliCatalog, modelsFromCatalog } from "../src/models.js";
+import { CLIENT_IDE, CLIENT_VERSION } from "../src/metadata.js";
+import { streamDevin } from "../src/stream.js";
 
 const PROVIDER_ID = "devin";
-const API_ID = "devin-local";
 const PLACEHOLDER_BASE_URL = "https://server.codeium.com";
 
 let _pi: ExtensionAPI | null = null;
+let catalogRequest: Promise<ProviderModelConfig[]> | null = null;
 
-async function loadRuntime(): Promise<Runtime> {
-  if (!runtime) {
-    const [credentials, cli, models, metadata, stream] = await Promise.all([
-      import("../src/credentials.ts"),
-      import("../src/cli.ts"),
-      import("../src/models.ts"),
-      import("../src/metadata.ts"),
-      import("../src/stream.ts"),
-    ]);
-    runtime = { ...credentials, ...cli, ...models, ...metadata, ...stream };
-  }
-  return runtime;
+function isOffline(): boolean {
+  const value = process.env.PI_OFFLINE?.toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
 }
 
-async function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]): Promise<void> {
-  const { DEVIN_CLI_AUTH_MARKER, loginWithCli, readActiveCredentials, loadCliCatalog, modelsFromCatalog, streamDevin } = await loadRuntime();
+function refreshCatalog(pi: ExtensionAPI): Promise<ProviderModelConfig[]> {
+  if (!catalogRequest) {
+    const pending = loadCliCatalog().then((catalog) => {
+      if (!isUsableCatalog(catalog)) {
+        throw new Error("Devin CLI returned no usable model families");
+      }
+      const models = modelsFromCatalog(catalog);
+      try {
+        writeCatalogCache(catalog);
+      } catch (error) {
+        console.warn(`Devin: failed to cache model catalog: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return models;
+    });
+    catalogRequest = pending;
+    void pending.finally(() => {
+      if (catalogRequest === pending) catalogRequest = null;
+    }).catch(() => {});
+  }
+  return catalogRequest.then((models) => {
+    if (_pi === pi) registerDevinProvider(pi, models);
+    return models;
+  });
+}
+
+function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]): void {
   pi.registerProvider(PROVIDER_ID, {
     name: "Devin Local",
-    api: API_ID,
-    apiKey: DEVIN_CLI_AUTH_MARKER,
+    api: "devin-local",
     baseUrl: PLACEHOLDER_BASE_URL,
     models,
     oauth: {
@@ -52,8 +61,7 @@ async function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConf
         const creds = await loginWithCli();
         if (_pi) {
           try {
-            const catalog = await loadCliCatalog();
-            await registerDevinProvider(_pi, modelsFromCatalog(catalog));
+            await refreshCatalog(_pi);
           } catch {
             // keep current models
           }
@@ -65,7 +73,7 @@ async function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConf
         };
       },
       async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
-        const creds = readActiveCredentials();
+        const creds = readCredentials();
         if (!creds) return credentials;
         return {
           refresh: "",
@@ -74,7 +82,7 @@ async function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConf
         };
       },
       getApiKey(credentials: OAuthCredentials): string {
-        return readActiveCredentials()?.apiKey || credentials.access;
+        return readCredentials()?.apiKey || credentials.access;
       },
       modifyModels(models: Model<Api>[], _credentials: OAuthCredentials): Model<Api>[] {
         return models;
@@ -86,27 +94,32 @@ async function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConf
 
 export default async function (pi: ExtensionAPI): Promise<void> {
   _pi = pi;
-  const { loadCliCatalog, modelsFromCatalog, readActiveCredentials, authStatus, whichDevin, devinVersion, CLIENT_IDE, CLIENT_VERSION, FALLBACK_MODELS } = await loadRuntime();
-  await registerDevinProvider(pi, FALLBACK_MODELS);
-
+  let cached: CachedDevinCatalog | null | undefined;
+  let initialModels = FALLBACK_MODELS;
   try {
-    if (readActiveCredentials()) {
-      const catalog = await loadCliCatalog();
-      await registerDevinProvider(pi, modelsFromCatalog(catalog));
-    }
-  } catch {
-    // fallback models already registered
+    cached = readCatalogCache();
+    if (cached) initialModels = modelsFromCatalog(cached.catalog);
+  } catch (error) {
+    cached = null;
+    console.warn(`Devin: failed to read model catalog cache: ${error instanceof Error ? error.message : String(error)}`);
   }
+  registerDevinProvider(pi, initialModels);
 
-  pi.on("session_start", async () => {
+  if (!isOffline()) {
     try {
-      if (!_pi || !readActiveCredentials()) return;
-      const catalog = await loadCliCatalog();
-      await registerDevinProvider(_pi, modelsFromCatalog(catalog));
+      if (readCredentials()) {
+        if (!cached) {
+          await refreshCatalog(pi);
+        } else if (!isCatalogCacheFresh(cached)) {
+          void refreshCatalog(pi).catch((error) => {
+            console.warn(`Devin: background model catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }
+      }
     } catch {
-      // keep current models
+      // Cached or fallback models stay registered when credential discovery or a cold refresh fails.
     }
-  });
+  }
 
   pi.registerCommand("devin-status", {
     description: "Show Devin CLI auth + binary status",
@@ -130,9 +143,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     description: "Refresh Devin Local model catalog from `devin models list`",
     handler: async (_args, ctx) => {
       try {
-        const catalog = await loadCliCatalog();
-        const models = modelsFromCatalog(catalog);
-        await registerDevinProvider(pi, models);
+        const models = await refreshCatalog(pi);
         ctx.ui.notify(`Devin: loaded ${models.length} families from the local CLI.`, "info");
       } catch (error) {
         ctx.ui.notify(
@@ -144,6 +155,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("session_shutdown", async () => {
-    _pi = null;
+    if (_pi === pi) _pi = null;
   });
 }

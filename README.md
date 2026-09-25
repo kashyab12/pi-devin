@@ -32,6 +32,8 @@ and the platform's command locator. Linux and macOS use the standard Devin
 paths; Windows also checks the installed fed binary and common user-local
 wrappers.
 
+On Windows, discovery checks the CLI installer and Devin Desktop locations, then uses `where.exe` to search PATH. Native executables and `.cmd`/`.bat` wrappers are supported, including paths with spaces. `DEVIN_CLI` takes precedence on every platform.
+
 ## Install
 
 From git:
@@ -76,6 +78,8 @@ Commands:
 
 - `/devin-status` — CLI path, version, auth
 - `/devin-refresh` — reload `devin models list --format json`
+
+The model catalog is cached for six hours in `$XDG_CACHE_HOME/pi-devin/models.json` (or `~/.cache/pi-devin/models.json`). A fresh cache avoids the CLI call at startup; an older cache remains available while it refreshes in the background. Set `PI_OFFLINE=1` to skip automatic catalog refreshes. `/devin-refresh` still requests a refresh explicitly.
 
 ## What this is / is not
 

@@ -9,8 +9,10 @@ import { clearDevinBinCache, findDevinBin, whichDevin, runDevin } from "../src/c
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "pi devin cli "));
   // Windows environment lookups ignore case; a spread object does not.
-  const keys = ["DEVIN_CLI", "LOCALAPPDATA", "ProgramFiles", "PATH", "USERPROFILE"];
+  const keys = ["DEVIN_CLI", "LOCALAPPDATA", "ProgramFiles", "PATH", "USERPROFILE", "HOME"];
   const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  process.env.USERPROFILE = directory;
+  process.env.HOME = directory;
   clearDevinBinCache();
   t.after(() => {
     for (const key of keys) {

@@ -26,31 +26,18 @@ Desktop locations, then uses `where.exe` for standard `devin` names. Native
 executables and `.cmd`/`.bat` wrappers are supported, including paths with
 spaces. Set `DEVIN_CLI` when the executable or wrapper uses a different name.
 
-Set `DEVIN_CREDENTIALS_PATH` to use a non-default credentials file. Its API key
-and `api_server_url` are read together, so a fed installation does not need
-special executable-name detection. For example, in PowerShell:
+For a custom CLI installation, set `DEVIN_CLI` to its executable or wrapper and
+`DEVIN_CREDENTIALS_PATH` to its credentials file. The API key and
+`api_server_url` are read from the same file. For example, in PowerShell:
 
 ```powershell
-$env:DEVIN_CLI = "C:\tools\devin-fed.cmd"
-$env:DEVIN_CREDENTIALS_PATH = "C:\path\to\fed\credentials.toml"
+$env:DEVIN_CLI = "C:\tools\devin.cmd"
+$env:DEVIN_CREDENTIALS_PATH = "C:\path\to\credentials.toml"
 ```
 
 Point `DEVIN_CREDENTIALS_PATH` at the file created by the selected CLI. The
 override must support the `auth status`, `auth login`, and `models list
 --format json` commands used by this package.
-
-These variables configure this Pi provider. Herdr process detection is
-separate: run `herdr integration install pi` for Herdr to track a Pi session.
-To run a fed CLI through a host-visible wrapper on Linux or macOS, set
-`HERDR_AGENT=devin` only for that wrapper:
-
-```sh
-HERDR_AGENT=devin /path/to/devin-fed
-```
-
-Herdr then uses its existing Devin agent detection; this does not require a
-separate Devin-fed agent kind. Herdr documents this hint in its [agent
-detection guide](https://herdr.dev/docs/agents/).
 
 ## Install
 

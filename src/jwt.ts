@@ -27,13 +27,15 @@ function anySignal(signals: AbortSignal[]): AbortSignal {
 export async function mintUserJwt(
   apiKey: string,
   host: string,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  clientVersion: string,
 ): Promise<MintedUserJwt> {
   const metadata = buildMetadata({
     apiKey,
     sessionId: randomUUID(),
     requestId: BigInt(Date.now()),
     triggerId: randomUUID(),
+    version: clientVersion,
   });
   const timeout = AbortSignal.timeout(30_000);
   const combined = signal ? anySignal([signal, timeout]) : timeout;
@@ -75,22 +77,33 @@ export async function mintUserJwt(
   return { jwt, expiresAt };
 }
 
-let cache: { jwt: string; expiresAt: number; apiKey: string; host: string } | null = null;
+let cache: { jwt: string; expiresAt: number; apiKey: string; host: string; clientVersion: string } | null = null;
 const inFlight = new Map<string, Promise<MintedUserJwt>>();
 
-export async function getCachedUserJwt(apiKey: string, host: string, signal?: AbortSignal): Promise<string> {
+export async function getCachedUserJwt(
+  apiKey: string,
+  host: string,
+  signal: AbortSignal | undefined,
+  clientVersion: string,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  if (cache && cache.apiKey === apiKey && cache.host === host && cache.expiresAt > now + 60) {
+  if (
+    cache
+    && cache.apiKey === apiKey
+    && cache.host === host
+    && cache.clientVersion === clientVersion
+    && cache.expiresAt > now + 60
+  ) {
     return cache.jwt;
   }
-  const key = `${host}\x1f${apiKey}`;
+  const key = `${host}\x1f${apiKey}\x1f${clientVersion}`;
   const existing = inFlight.get(key);
   if (existing) return (await existing).jwt;
-  const promise = mintUserJwt(apiKey, host, signal);
+  const promise = mintUserJwt(apiKey, host, signal, clientVersion);
   inFlight.set(key, promise);
   try {
     const minted = await promise;
-    cache = { jwt: minted.jwt, expiresAt: minted.expiresAt, apiKey, host };
+    cache = { jwt: minted.jwt, expiresAt: minted.expiresAt, apiKey, host, clientVersion };
     return minted.jwt;
   } finally {
     inFlight.delete(key);

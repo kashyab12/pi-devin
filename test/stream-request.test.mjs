@@ -39,6 +39,9 @@ function mockDevin(t, replies = [Buffer.concat([encodeString(3, "OK"), encodeVar
   t.after(clearCachedUserJwt);
   t.mock.method(globalThis, "fetch", async (url, options) => {
     if (url === "https://devin.invalid/exa.auth_pb.AuthService/GetUserJwt") {
+      const envelope = fields(Buffer.from(options.body));
+      const metadata = fields(envelope.find((field) => field.num === 1).value);
+      requests.authClientVersion = stringField(metadata, 2);
       return new Response(encodeMessage(1, Buffer.from("eyJtest.jwt")));
     }
     assert.equal(url, "https://devin.invalid/exa.api_server_pb.ApiServerService/GetChatMessage");
@@ -53,16 +56,32 @@ function mockDevin(t, replies = [Buffer.concat([encodeString(3, "OK"), encodeVar
   return requests;
 }
 
-async function complete(context) {
+async function complete(context, env = {}) {
   const stream = streamDevin(model, context, {
     apiKey: "synthetic-test-key",
-    env: { DEVIN_API_SERVER_URL: "https://devin.invalid" },
+    env: {
+      DEVIN_API_SERVER_URL: "https://devin.invalid",
+      DEVIN_CLIENT_VERSION: "3.10.35",
+      ...env,
+    },
   });
   for await (const event of stream) {
     assert.notEqual(event.type, "error", event.error?.errorMessage);
   }
   return stream.result();
 }
+
+test("uses the resolved client version in both authentication and chat metadata", async (t) => {
+  const requests = mockDevin(t);
+  await complete(normalizeContext({ messages: [user("version probe")] }), {
+    DEVIN_CLIENT_VERSION: "3.10.35",
+  });
+
+  const chatMetadata = fields(requests[0].find((field) => field.num === 1).value);
+  assert.equal(requests.authClientVersion, "3.10.35");
+  assert.equal(stringField(chatMetadata, 2), "3.10.35");
+  assert.equal(stringField(chatMetadata, 7), "3.10.35");
+});
 
 // #7: verify the normalized transcript survives the complete request-encoding path.
 test("encodes the current system prompt once in field 2, with unchanged user text and images", async (t) => {

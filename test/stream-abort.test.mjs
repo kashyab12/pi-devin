@@ -48,7 +48,10 @@ test("aborting an in-flight stream reports aborted without leaking a rejection",
 
   const stream = streamDevin(model, normalizeContext({ messages: [user("hello")] }), {
     apiKey: "synthetic-test-key",
-    env: { DEVIN_API_SERVER_URL: "https://devin.invalid" },
+    env: {
+      DEVIN_API_SERVER_URL: "https://devin.invalid",
+      DEVIN_CLIENT_VERSION: "3.10.35",
+    },
     signal: ac.signal,
   });
 
@@ -89,7 +92,13 @@ test("real fetch cancellation after a response chunk leaves the process usable",
   t.after(() => { server.closeAllConnections(); server.close(); });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const ac = new AbortController();
-  const options = { apiKey: "synthetic-test-key", env: { DEVIN_API_SERVER_URL: `http://127.0.0.1:${server.address().port}` } };
+  const options = {
+    apiKey: "synthetic-test-key",
+    env: {
+      DEVIN_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      DEVIN_CLIENT_VERSION: "3.10.35",
+    },
+  };
   const stream = streamDevin(model, normalizeContext({ messages: [user("hello")] }), { ...options, signal: ac.signal });
   let sawText = false;
   for await (const event of stream) {

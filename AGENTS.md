@@ -21,4 +21,5 @@ src/context-map.ts    # Pi Context → Cognition chat history
 - `/login devin` must call `devin auth login` when credentials are missing, not a custom Windsurf paste flow.
 - Model IDs must come from `devin models list`, not a hardcoded cloud allowlist.
 - Do not depend on Zed or ACP. Pi keeps tools, permissions, and the session tree.
+- Client identity stays `devin-desktop`. Never hardcode a fallback Desktop version: resolve it from an explicit valid override, installed Devin Desktop `product.json`, a validated six-hour cache, or the fixed official stable update manifest, and fail closed when no verified version is available.
 - Package must stay installable as a Pi package: `keywords: ["pi-package"]` and `pi.extensions`.

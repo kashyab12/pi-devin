@@ -48,6 +48,82 @@ test("keys cached user JWTs by the resolved client version", async (t) => {
   assert.deepEqual(advertisedVersions, ["3.10.35", "3.10.36"]);
 });
 
+test("lets one JWT waiter abort without cancelling a shared mint", async (t) => {
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  const firstController = new AbortController();
+  let resolveFetch;
+  let fetchSignal;
+  let fetches = 0;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    fetches++;
+    fetchSignal = options.signal;
+    return await new Promise((resolve) => { resolveFetch = resolve; });
+  });
+
+  const first = getCachedUserJwt(
+    "synthetic-key", "https://devin.invalid", firstController.signal, "3.10.35",
+  );
+  const second = getCachedUserJwt(
+    "synthetic-key", "https://devin.invalid", undefined, "3.10.35",
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  const reason = new Error("first waiter cancelled");
+  firstController.abort(reason);
+  resolveFetch(new Response(encodeMessage(1, Buffer.from("eyJtest.jwt.shared"))));
+
+  await assert.rejects(first, (error) => error === reason);
+  assert.equal(await second, "eyJtest.jwt.shared");
+  assert.equal(fetches, 1);
+  assert.equal(fetchSignal.aborted, false);
+});
+
+test("lets a later JWT waiter cancel independently while the first completes", async (t) => {
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  const secondController = new AbortController();
+  let resolveFetch;
+  let fetches = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    fetches++;
+    return await new Promise((resolve) => { resolveFetch = resolve; });
+  });
+
+  const first = getCachedUserJwt(
+    "synthetic-key", "https://devin.invalid", undefined, "3.10.35",
+  );
+  const second = getCachedUserJwt(
+    "synthetic-key", "https://devin.invalid", secondController.signal, "3.10.35",
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  const reason = new Error("second waiter cancelled");
+  secondController.abort(reason);
+  resolveFetch(new Response(encodeMessage(1, Buffer.from("eyJtest.jwt.shared"))));
+
+  assert.equal(await first, "eyJtest.jwt.shared");
+  await assert.rejects(second, (error) => error === reason);
+  assert.equal(fetches, 1);
+});
+
+test("does not start a JWT mint for a pre-aborted waiter", async (t) => {
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  const controller = new AbortController();
+  const reason = new Error("already cancelled");
+  controller.abort(reason);
+  let fetches = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    fetches++;
+    return new Response(encodeMessage(1, Buffer.from("eyJtest.jwt")));
+  });
+
+  await assert.rejects(
+    getCachedUserJwt("synthetic-key", "https://devin.invalid", controller.signal, "3.10.35"),
+    (error) => error === reason,
+  );
+  assert.equal(fetches, 0);
+});
+
 test("does not coalesce in-flight user JWT requests across client versions", async (t) => {
   clearCachedUserJwt();
   t.after(clearCachedUserJwt);

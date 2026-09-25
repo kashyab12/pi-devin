@@ -443,9 +443,11 @@ export function streamDevin(
     try {
       const apiKey = options?.apiKey;
       if (!apiKey) throw new Error("No Devin credentials. Run /login devin (uses the local Devin CLI).");
+      options?.signal?.throwIfAborted();
       const host = (options?.env?.DEVIN_API_SERVER_URL || "https://server.codeium.com").replace(/\/$/, "");
       const clientVersion = await resolveRuntimeClientVersion({
         env: options?.env as NodeJS.ProcessEnv | undefined,
+        signal: options?.signal,
       });
       const modelUid = resolveModelUid(model.id, model.thinkingLevelMap, options?.reasoning);
       const mapped = mapContextToChat(context);

@@ -19,6 +19,33 @@ const model = {
 };
 const user = (content) => ({ role: "user", content, timestamp: 1 });
 
+test("a pre-aborted stream stops before client-version resolution or network I/O", async (t) => {
+  clearCachedUserJwt();
+  t.after(clearCachedUserJwt);
+  const controller = new AbortController();
+  controller.abort(new Error("cancel before stream start"));
+  let fetches = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    fetches++;
+    throw new Error("network must not be reached");
+  });
+
+  const stream = streamDevin(model, normalizeContext({ messages: [user("hello")] }), {
+    apiKey: "synthetic-test-key",
+    env: {
+      DEVIN_API_SERVER_URL: "https://devin.invalid",
+      DEVIN_CLIENT_VERSION: "3.10.35",
+    },
+    signal: controller.signal,
+  });
+  const events = [];
+  for await (const event of stream) events.push(event);
+
+  assert.equal(events.at(-1)?.reason, "aborted");
+  assert.equal((await stream.result()).stopReason, "aborted");
+  assert.equal(fetches, 0);
+});
+
 test("aborting an in-flight stream reports aborted without leaking a rejection", async (t) => {
   clearCachedUserJwt();
   t.after(clearCachedUserJwt);

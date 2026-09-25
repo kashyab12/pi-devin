@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -27,9 +27,23 @@ const KNOWN_BINS = [
   "/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin",
 ].filter((p): p is string => Boolean(p));
 
+export function findDevinBinInPath(searchPath = process.env.PATH ?? "", platform = process.platform): string | null {
+  const names = platform === "win32"
+    ? ["devin-fed.exe", "devin-fed.cmd", "devin-fed.bat", "devin.cmd", "devin.bat", "devin.exe", "devin"]
+    : ["devin"];
+  const separator = platform === "win32" ? ";" : delimiter;
+  for (const directory of searchPath.split(separator).filter(Boolean)) {
+    for (const name of names) {
+      const bin = join(directory, name);
+      if (existsSync(bin)) return bin;
+    }
+  }
+  return null;
+}
+
 export function isFedCli(bin: string | null): boolean {
-  if (process.platform === "win32" && /(?:^|[\\/])devin-fed(?:\.exe)?$/i.test(bin ?? "")) return true;
-  if (process.platform !== "win32" || !bin || !/\.(?:cmd|bat)$/i.test(bin)) return false;
+  if (/(?:^|[\\/])devin-fed(?:\.exe)?$/i.test(bin ?? "")) return true;
+  if (!bin || !/\.(?:cmd|bat)$/i.test(bin)) return false;
   try {
     return /devin-fed(?:\.exe)?/i.test(readFileSync(bin, "utf8"));
   } catch {
@@ -47,8 +61,8 @@ export function findDevinBin(): string | null {
       return bin;
     }
   }
-  cachedBin = null;
-  return null;
+  cachedBin = findDevinBinInPath();
+  return cachedBin;
 }
 
 export function clearDevinBinCache(): void {

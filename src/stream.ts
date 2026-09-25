@@ -11,7 +11,7 @@ import {
   createAssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
 import { mapContextToChat, type ChatHistoryItem, type ContentPart, type ToolDef } from "./context-map.ts";
-import { readActiveCredentials } from "./credentials.ts";
+import { readActiveCredentials, resolveStreamAuth } from "./credentials.ts";
 import { getCachedUserJwt } from "./jwt.ts";
 import { buildMetadata } from "./metadata.ts";
 import { resolveModelUid } from "./models.ts";
@@ -441,10 +441,9 @@ export function streamDevin(
     };
 
     try {
-      const credentials = readActiveCredentials();
-      const apiKey = credentials?.apiKey || (options?.apiKey === "devin-cli" ? undefined : options?.apiKey);
+      const auth = resolveStreamAuth(options?.apiKey, options?.env?.DEVIN_API_SERVER_URL, readActiveCredentials());
+      const { apiKey, host } = auth;
       if (!apiKey) throw new Error("No Devin credentials. Run /login devin (uses the local Devin CLI).");
-      const host = (options?.env?.DEVIN_API_SERVER_URL || credentials?.apiServerUrl || "https://server.codeium.com").replace(/\/$/, "");
       const modelUid = resolveModelUid(model.id, model.thinkingLevelMap, options?.reasoning);
       const mapped = mapContextToChat(context);
       stream.push({ type: "start", partial: output });

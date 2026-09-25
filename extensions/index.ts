@@ -3,6 +3,7 @@ import type { Api, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendi
 
 type Runtime = {
   authStatus: typeof import("../src/credentials.ts").authStatus;
+  DEVIN_CLI_AUTH_MARKER: typeof import("../src/credentials.ts").DEVIN_CLI_AUTH_MARKER;
   loginWithCli: typeof import("../src/credentials.ts").loginWithCli;
   readActiveCredentials: typeof import("../src/credentials.ts").readActiveCredentials;
   whichDevin: typeof import("../src/cli.ts").whichDevin;
@@ -19,7 +20,6 @@ let runtime: Runtime | undefined;
 
 const PROVIDER_ID = "devin";
 const API_ID = "devin-local";
-const LOCAL_AUTH_MARKER = "devin-cli";
 const PLACEHOLDER_BASE_URL = "https://server.codeium.com";
 
 let _pi: ExtensionAPI | null = null;
@@ -39,11 +39,11 @@ async function loadRuntime(): Promise<Runtime> {
 }
 
 async function registerDevinProvider(pi: ExtensionAPI, models: ProviderModelConfig[]): Promise<void> {
-  const { loginWithCli, readActiveCredentials, loadCliCatalog, modelsFromCatalog, streamDevin } = await loadRuntime();
+  const { DEVIN_CLI_AUTH_MARKER, loginWithCli, readActiveCredentials, loadCliCatalog, modelsFromCatalog, streamDevin } = await loadRuntime();
   pi.registerProvider(PROVIDER_ID, {
     name: "Devin Local",
     api: API_ID,
-    apiKey: LOCAL_AUTH_MARKER,
+    apiKey: DEVIN_CLI_AUTH_MARKER,
     baseUrl: PLACEHOLDER_BASE_URL,
     models,
     oauth: {

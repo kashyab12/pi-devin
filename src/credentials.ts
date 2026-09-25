@@ -3,12 +3,27 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { findDevinBin, isFedCli, runDevin } from "./cli.ts";
 
+export const DEVIN_CLI_AUTH_MARKER = "devin-cli";
+
 export interface DevinCredentials {
   apiKey: string;
   apiServerUrl: string;
   webappHost: string;
   apiUrl: string;
   path: string;
+}
+
+export function resolveStreamAuth(
+  apiKey: string | undefined,
+  apiServerUrl: string | undefined,
+  credentials: DevinCredentials | null,
+): { apiKey: string | undefined; host: string } {
+  const useCredentials = Boolean(credentials) &&
+    (!apiKey || apiKey === DEVIN_CLI_AUTH_MARKER || apiKey === credentials?.apiKey);
+  return {
+    apiKey: useCredentials ? credentials?.apiKey : apiKey === DEVIN_CLI_AUTH_MARKER ? undefined : apiKey,
+    host: (apiServerUrl || (useCredentials ? credentials?.apiServerUrl : undefined) || "https://server.codeium.com").replace(/\/$/, ""),
+  };
 }
 
 const DEFAULT_CREDENTIALS_PATH = join(homedir(), ".local/share/devin/credentials.toml");
@@ -34,10 +49,6 @@ export function credentialsPath(): string {
   return credentialsPathForCli(findDevinBin());
 }
 
-export function activeCredentialsPath(): string {
-  return credentialsPathForCli(findDevinBin());
-}
-
 export function readCredentials(path = credentialsPath()): DevinCredentials | null {
   if (!existsSync(path)) return null;
   const raw = parseTomlStrings(readFileSync(path, "utf8"));
@@ -53,7 +64,7 @@ export function readCredentials(path = credentialsPath()): DevinCredentials | nu
 }
 
 export function readActiveCredentials(): DevinCredentials | null {
-  return readCredentials(activeCredentialsPath());
+  return readCredentials(credentialsPath());
 }
 
 export async function authStatus(): Promise<{

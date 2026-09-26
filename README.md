@@ -59,10 +59,12 @@ Restart Pi or run `/reload`.
 
 ```text
 /login devin
-/model devin/claude-opus-5-high
-/model devin/claude-5-fable-high
-/model devin/gpt-5-6-sol-high
+/model devin/claude-opus-5
+/model devin/claude-fable-5
+/model devin/gpt-5.6-sol
 ```
+
+Families with multiple reasoning variants keep their catalog slug as the Pi model id. Pi's thinking level selects the Devin model UID sent on the wire; for example, `devin/swe-2` maps `medium`, `high`, and `max` to `swe-2-medium`, `swe-2-high`, and `swe-2-max`. Levels absent from the live family are hidden instead of falling back to another variant.
 
 `/login devin` runs `devin auth login` if `~/.local/share/devin/credentials.toml` is missing. If you already signed in through the Devin CLI or Devin Desktop, that file is reused.
 

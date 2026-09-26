@@ -84,16 +84,25 @@ function encodeChatMessagePrompt(
   return Buffer.concat(parts);
 }
 
+/** Mirrors the Devin CLI: num_completions / max_tokens / max_newlines plus
+ * temperature / top_k / top_p, and nothing else. */
 function encodeCompletionConfiguration(maxOutputTokens?: number): Buffer {
   return Buffer.concat([
     encodeVarintField(1, 1),
-    encodeVarintField(2, 64_000),
-    encodeVarintField(3, maxOutputTokens ?? 128_000),
-    encodeFixed64Field(5, 0.7),
-    encodeFixed64Field(6, 0.95),
-    encodeVarintField(7, 50),
-    encodeFixed64Field(8, 1.0),
-    encodeFixed64Field(11, 1.0),
+    encodeVarintField(2, maxOutputTokens ?? 128_000),
+    encodeVarintField(3, 400),
+    encodeFixed64Field(5, 1.0),
+    encodeVarintField(7, 40),
+    encodeFixed64Field(8, 0.95),
+  ]);
+}
+
+/** CortexTrajectoryReference: cascade trajectory, user-input step. */
+function encodeTrajectoryReference(trajectoryId: string): Buffer {
+  return Buffer.concat([
+    encodeString(1, trajectoryId),
+    encodeVarintField(3, 4),
+    encodeVarintField(4, 14),
   ]);
 }
 
@@ -114,7 +123,7 @@ function buildGetChatMessageRequest(args: {
   messages: ChatHistoryItem[];
   tools?: ToolDef[];
   cascadeId: string;
-  promptId: string;
+  trajectoryId: string;
   sessionId: string;
   requestId: bigint;
   triggerId: string;
@@ -143,9 +152,10 @@ function buildGetChatMessageRequest(args: {
     encodeVarintField(7, 5),
     encodeMessage(8, encodeCompletionConfiguration(args.maxOutputTokens)),
     ...(args.tools ?? []).map((tool) => encodeMessage(10, encodeToolDef(tool))),
+    encodeMessage(15, encodeTrajectoryReference(args.trajectoryId)),
     encodeString(16, args.cascadeId),
+    encodeVarintField(20, 1),
     encodeString(21, args.modelUid),
-    encodeString(22, args.promptId),
   ]);
 }
 
@@ -223,13 +233,13 @@ function decodeUsage(buf: Buffer): CloudChatEvent | null {
   };
 }
 
-const sessionCache = new Map<string, { sessionId: string; cascadeId: string }>();
+const sessionCache = new Map<string, { sessionId: string; cascadeId: string; trajectoryId: string }>();
 
 function sessionIds(apiKey: string, host: string) {
   const key = `${host}\x1f${apiKey}`;
   let ids = sessionCache.get(key);
   if (!ids) {
-    ids = { sessionId: randomUUID(), cascadeId: randomUUID() };
+    ids = { sessionId: randomUUID(), cascadeId: randomUUID(), trajectoryId: randomUUID() };
     sessionCache.set(key, ids);
   }
   return ids;
@@ -256,7 +266,7 @@ async function* streamChatEvents(args: {
     messages: args.messages,
     tools: args.tools,
     cascadeId: ids.cascadeId,
-    promptId: randomUUID(),
+    trajectoryId: ids.trajectoryId,
     sessionId: ids.sessionId,
     requestId: BigInt(Date.now()),
     triggerId: randomUUID(),

@@ -162,3 +162,58 @@ test("retains the system prompt and replays assistant tool calls and results on 
   assert.equal(stringField(history[2], 7), callId);
   assert.equal(stringField(history[2], 3), "file-value");
 });
+
+test("decodes and replays signed thinking over multiple turns (#15)", async (t) => {
+  const requests = mockDevin(t, [
+    Buffer.concat([
+      encodeString(9, "First summary"),
+      encodeString(10, "opaque-first"),
+      encodeVarintField(11, 1),
+      encodeString(21, "provider-specific"),
+      encodeString(3, "First answer"),
+      encodeVarintField(5, 0),
+    ]),
+    Buffer.concat([
+      encodeString(9, "Second summary"),
+      encodeString(10, "opaque-second"),
+      encodeString(21, "non-sealed"),
+      encodeString(3, "Second answer"),
+      encodeVarintField(5, 0),
+    ]),
+    Buffer.concat([encodeString(3, "Third answer"), encodeVarintField(5, 0)]),
+  ]);
+  const context = normalizeContext({ messages: [user("First question")] });
+
+  const first = await complete(context);
+  context.messages.push(first, user("Second question"));
+  const second = await complete(context);
+  context.messages.push(second, user("Third question"));
+  await complete(context);
+
+  assert.deepEqual(first.content, [
+    {
+      type: "thinking",
+      thinking: "First summary",
+      thinkingSignature: "provider-specific\u001fopaque-first",
+      redacted: true,
+    },
+    { type: "text", text: "First answer" },
+  ]);
+  assert.equal(requests.length, 3);
+  const secondHistory = messages(requests[1]);
+  const firstAssistant = secondHistory[1];
+  assert.equal(stringField(firstAssistant, 3), "First answer");
+  assert.equal(stringField(firstAssistant, 11), "First summary");
+  assert.equal(stringField(firstAssistant, 12), "opaque-first");
+  assert.equal(firstAssistant.find((field) => field.num === 13)?.value, 1n);
+  assert.equal(stringField(firstAssistant, 18), "provider-specific");
+
+  const thirdHistory = messages(requests[2]);
+  const assistants = thirdHistory.filter((message) => message.find((field) => field.num === 2)?.value === 2n);
+  assert.equal(assistants.length, 2);
+  assert.equal(stringField(assistants[1], 3), "Second answer");
+  assert.equal(stringField(assistants[1], 11), "Second summary");
+  assert.equal(stringField(assistants[1], 12), "opaque-second");
+  assert.equal(assistants[1].some((field) => field.num === 13), false);
+  assert.equal(stringField(assistants[1], 18), "non-sealed");
+});

@@ -66,6 +66,10 @@ Restart Pi or run `/reload`.
 
 `/login devin` runs `devin auth login` if `~/.local/share/devin/credentials.toml` is missing. If you already signed in through the Devin CLI or Devin Desktop, that file is reused.
 
+Thinking: the server streams a readable reasoning summary alongside an opaque
+signature. Pi retains and replays both on later requests so the model can continue
+its prior reasoning, without exposing the signature bytes as reasoning text.
+
 Commands:
 
 - `/devin-status` — CLI path, version, auth

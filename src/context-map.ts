@@ -7,6 +7,7 @@ import {
   type Tool,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { unpackThinkingSignature, type ChatThinking } from "./thinking.js";
 
 export interface ContentPart {
   type: "text" | "image";
@@ -20,6 +21,8 @@ export interface ChatHistoryItem {
   content: string | ContentPart[];
   tool_call_id?: string;
   tool_calls?: Array<{ id: string; name: string; arguments: string }>;
+  /** Prior reasoning summary and opaque signature, replayed for continuation. */
+  thinking?: ChatThinking;
 }
 
 export interface ToolDef {
@@ -62,6 +65,7 @@ export function mapContextToChat(context: TranscriptContext): MappedChat {
     if (message.role === "assistant") {
       const texts: string[] = [];
       const toolCalls: Array<{ id: string; name: string; arguments: string }> = [];
+      let thinking: ChatThinking | undefined;
       for (const part of message.content) {
         if (part.type === "text") texts.push(part.text);
         if (part.type === "toolCall") {
@@ -71,11 +75,25 @@ export function mapContextToChat(context: TranscriptContext): MappedChat {
             arguments: JSON.stringify(part.arguments ?? {}),
           });
         }
+        if (part.type === "thinking") {
+          const decoded = unpackThinkingSignature(part.thinkingSignature);
+          // The wire format has one thinking slot per message. Unsigned summaries
+          // cannot be verified, so retain the newest signed block only.
+          if (part.thinking && decoded.signature) {
+            thinking = {
+              text: part.thinking,
+              signature: decoded.signature,
+              signatureType: decoded.signatureType,
+              redacted: part.redacted,
+            };
+          }
+        }
       }
       messages.push({
         role: "assistant",
         content: texts.join("\n"),
         tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+        thinking,
       });
       continue;
     }

@@ -51,6 +51,23 @@ function usage(metrics) {
 
 const metrics = { input_tokens: 461, output_tokens: 262, cached_input_tokens: 228_162, cache_creation_input_tokens: 17 };
 
+test("retains the thinking signature type and redaction flag for replay (#15)", async (t) => {
+  const frame = Buffer.concat([
+    encodeString(9, "Reasoning summary"),
+    encodeString(10, "opaque-signature"),
+    encodeVarintField(11, 1),
+    encodeString(21, "sealed"),
+    encodeVarintField(5, 0),
+  ]);
+  const { result } = await run(t, [frame]);
+  assert.deepEqual(result.content, [{
+    type: "thinking",
+    thinking: "Reasoning summary",
+    thinkingSignature: "sealed\u001fopaque-signature",
+    redacted: true,
+  }]);
+});
+
 test("counts all four usage components and preserves them after an empty frame (#3, #4)", async (t) => {
   const { result } = await run(t, [usage(metrics), usage(Object.fromEntries(Object.keys(metrics).map((key) => [key, 0])))]);
   assert.deepEqual({ ...result.usage, cost: undefined }, {

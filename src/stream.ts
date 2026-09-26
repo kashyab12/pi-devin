@@ -15,6 +15,7 @@ import { mapContextToChat, type ChatHistoryItem, type ContentPart, type ToolDef 
 import { getCachedUserJwt } from "./jwt.js";
 import { buildMetadata } from "./metadata.js";
 import { resolveModelUid } from "./models.js";
+import { packThinkingSignature, type ChatThinking } from "./thinking.js";
 import {
   encodeFixed64Field,
   encodeMessage,
@@ -33,6 +34,8 @@ const SOURCE_BY_ROLE: Record<ChatHistoryItem["role"], number> = {
 export type CloudChatEvent =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string }
+  | { kind: "reasoning_signature"; signature: string; signatureType?: string }
+  | { kind: "reasoning_redacted" }
   | { kind: "tool_call_start"; id: string; name: string }
   | { kind: "tool_call_args"; argsDelta: string; id?: string }
   | { kind: "finish"; reason: "stop" | "tool_calls" | "length" | "content_filter" }
@@ -64,7 +67,11 @@ function encodeChatToolCall(tc: { id: string; name: string; arguments: string })
 function encodeChatMessagePrompt(
   content: ContentPart[],
   source: number,
-  opts?: { toolCallId?: string; toolCalls?: Array<{ id: string; name: string; arguments: string }> },
+  opts?: {
+    toolCallId?: string;
+    toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+    thinking?: ChatThinking;
+  },
 ): Buffer {
   const text = content
     .filter((part) => part.type === "text")
@@ -80,6 +87,14 @@ function encodeChatMessagePrompt(
   for (const tc of opts?.toolCalls ?? []) parts.push(encodeMessage(6, encodeChatToolCall(tc)));
   for (const img of content.filter((part) => part.type === "image")) {
     parts.push(encodeMessage(10, encodeImageData(img)));
+  }
+  // Replay only the readable summary; the opaque signature remains in its own
+  // verification field and is never exposed as reasoning text.
+  if (opts?.thinking) {
+    parts.push(encodeString(11, opts.thinking.text));
+    parts.push(encodeString(12, opts.thinking.signature));
+    if (opts.thinking.redacted) parts.push(encodeVarintField(13, 1));
+    if (opts.thinking.signatureType) parts.push(encodeString(18, opts.thinking.signatureType));
   }
   return Buffer.concat(parts);
 }
@@ -133,6 +148,7 @@ function buildGetChatMessageRequest(args: {
       encodeChatMessagePrompt(normalizeContent(message.content), SOURCE_BY_ROLE[message.role], {
         toolCallId: message.role === "tool" ? message.tool_call_id : undefined,
         toolCalls: message.role === "assistant" ? message.tool_calls : undefined,
+        thinking: message.role === "assistant" ? message.thinking : undefined,
       }),
     ),
   );
@@ -150,6 +166,8 @@ function buildGetChatMessageRequest(args: {
 }
 
 function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
+  let signature: string | undefined;
+  let signatureType: string | undefined;
   for (const field of iterFields(proto)) {
     if (field.num === 3 && field.wire === 2 && Buffer.isBuffer(field.value)) {
       const text = field.value.toString("utf8");
@@ -157,6 +175,14 @@ function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
     } else if (field.num === 9 && field.wire === 2 && Buffer.isBuffer(field.value)) {
       const text = field.value.toString("utf8");
       if (text) yield { kind: "reasoning", text };
+    } else if (field.num === 11 && field.wire === 0) {
+      if (Number(field.value) !== 0) yield { kind: "reasoning_redacted" };
+    } else if (field.num === 10 && field.wire === 2 && Buffer.isBuffer(field.value)) {
+      const text = field.value.toString("utf8");
+      if (text) signature = text;
+    } else if (field.num === 21 && field.wire === 2 && Buffer.isBuffer(field.value)) {
+      const text = field.value.toString("utf8");
+      if (text) signatureType = text;
     } else if (field.num === 6 && field.wire === 2 && Buffer.isBuffer(field.value)) {
       let id: string | undefined;
       let name: string | undefined;
@@ -183,6 +209,9 @@ function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
       if (usage) yield usage;
     }
   }
+  // Signature bytes stay opaque and are attached after all fields in this frame
+  // have supplied the corresponding type.
+  if (signature) yield { kind: "reasoning_signature", signature, signatureType };
 }
 
 function decodeUsage(buf: Buffer): CloudChatEvent | null {
@@ -398,6 +427,7 @@ export function streamDevin(
 
     let textOpen = false;
     let thinkingOpen = false;
+    let thinkingIndex = -1;
     let toolIndex = -1;
     let partialJson = "";
     let toolId = "";
@@ -471,7 +501,8 @@ export function streamDevin(
           closeText();
           if (!thinkingOpen) {
             output.content.push({ type: "thinking", thinking: "" });
-            stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+            thinkingIndex = output.content.length - 1;
+            stream.push({ type: "thinking_start", contentIndex: thinkingIndex, partial: output });
             thinkingOpen = true;
           }
           const idx = output.content.length - 1;
@@ -480,6 +511,14 @@ export function streamDevin(
             block.thinking += event.text;
             stream.push({ type: "thinking_delta", contentIndex: idx, delta: event.text, partial: output });
           }
+        } else if (event.kind === "reasoning_signature") {
+          const block = thinkingIndex >= 0 ? output.content[thinkingIndex] : undefined;
+          if (block?.type === "thinking") {
+            block.thinkingSignature = packThinkingSignature(event.signature, event.signatureType);
+          }
+        } else if (event.kind === "reasoning_redacted") {
+          const block = thinkingIndex >= 0 ? output.content[thinkingIndex] : undefined;
+          if (block?.type === "thinking") block.redacted = true;
         } else if (event.kind === "tool_call_start") {
           closeText();
           closeThinking();

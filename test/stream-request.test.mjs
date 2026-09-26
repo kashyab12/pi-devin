@@ -53,6 +53,46 @@ function mockDevin(t, replies = [Buffer.concat([encodeString(3, "OK"), encodeVar
   return requests;
 }
 
+test("matches the Devin CLI request fields", async (t) => {
+  const reply = Buffer.concat([encodeString(3, "OK"), encodeVarintField(5, 0)]);
+  const requests = mockDevin(t, [reply, reply]);
+  const context = normalizeContext({
+    tools: [readTool],
+    messages: [user("Read probe.txt")],
+  });
+
+  await complete(context);
+  await complete(context);
+
+  for (const request of requests) {
+    const configuration = fields(request.find((field) => field.num === 8).value);
+    assert.deepEqual(configuration.map((field) => field.num), [1, 2, 3, 5, 7, 8]);
+    assert.deepEqual(configuration.map((field) => field.wire), [0, 0, 0, 1, 0, 1]);
+    assert.equal(configuration[0].value, 1n);
+    assert.equal(configuration[1].value, 128_000n);
+    assert.equal(configuration[2].value, 400n);
+    assert.equal(configuration[3].value.readDoubleLE(0), 1.0);
+    assert.equal(configuration[4].value, 40n);
+    assert.equal(configuration[5].value.readDoubleLE(0), 0.95);
+
+    const trajectoryFields = request.filter((field) => field.num === 15);
+    assert.equal(trajectoryFields.length, 1);
+    const trajectory = fields(trajectoryFields[0].value);
+    assert.deepEqual(trajectory.map((field) => field.num), [1, 3, 4]);
+    assert.match(stringField(trajectory, 1), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(trajectory[1].value, 4n);
+    assert.equal(trajectory[2].value, 14n);
+
+    assert.equal(request.find((field) => field.num === 20)?.value, 1n);
+    assert.equal(request.some((field) => field.num === 17), false, "prompt_id remains absent");
+    assert.equal(request.some((field) => field.num === 22), false, "execution_id remains absent");
+    assert.deepEqual(request.slice(-5).map((field) => field.num), [10, 15, 16, 20, 21]);
+  }
+
+  const trajectories = requests.map((request) => stringField(fields(request.find((field) => field.num === 15).value), 1));
+  assert.equal(trajectories[0], trajectories[1], "trajectory id is stable within the cached session");
+});
+
 async function complete(context) {
   const stream = streamDevin(model, context, {
     apiKey: "synthetic-test-key",

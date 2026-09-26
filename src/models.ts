@@ -105,6 +105,11 @@ function familyToModels(family: DevinFamily): ProviderModelConfig[] {
       thinkingLevelMap[level] = variant.model_uid;
     }
   }
+  // Pi treats a missing level as supported and only null hides it, so mark every
+  // level this family does not ship instead of falling back to the default.
+  for (const level of THINKING_ORDER) {
+    if (thinkingLevelMap[level] === undefined) thinkingLevelMap[level] = null;
+  }
 
   const defaultUid = preferredDefault(thinkingLevelMap) ?? source[0]?.model_uid ?? family.family_uid;
   const sample = source.find((variant) => variant.model_uid === defaultUid) ?? source[0];
@@ -112,10 +117,11 @@ function familyToModels(family: DevinFamily): ProviderModelConfig[] {
 
   const mappedLevels = THINKING_ORDER.filter((level) => typeof thinkingLevelMap[level] === "string");
   const reasoning = mappedLevels.length > 1;
+  const familyId = family.slug || family.family_uid || defaultUid;
 
   return [
     {
-      id: defaultUid,
+      id: reasoning ? familyId : defaultUid,
       name: family.family_label || family.slug || defaultUid,
       reasoning,
       thinkingLevelMap: reasoning ? thinkingLevelMap : undefined,
@@ -129,10 +135,12 @@ function familyToModels(family: DevinFamily): ProviderModelConfig[] {
 
 export const FALLBACK_MODELS: ProviderModelConfig[] = [
   {
-    id: "claude-opus-5-high",
+    id: "claude-opus-5",
     name: "Claude Opus 5",
     reasoning: true,
     thinkingLevelMap: {
+      off: null,
+      minimal: null,
       low: "claude-opus-5-low",
       medium: "claude-opus-5-medium",
       high: "claude-opus-5-high",
@@ -145,10 +153,12 @@ export const FALLBACK_MODELS: ProviderModelConfig[] = [
     maxTokens: 128_000,
   },
   {
-    id: "claude-5-fable-high",
+    id: "claude-fable-5",
     name: "Claude Fable 5",
     reasoning: true,
     thinkingLevelMap: {
+      off: null,
+      minimal: null,
       low: "claude-5-fable-low",
       medium: "claude-5-fable-medium",
       high: "claude-5-fable-high",
@@ -161,11 +171,12 @@ export const FALLBACK_MODELS: ProviderModelConfig[] = [
     maxTokens: 128_000,
   },
   {
-    id: "gpt-5-6-sol-high",
+    id: "gpt-5.6-sol",
     name: "GPT-5.6 Sol",
     reasoning: true,
     thinkingLevelMap: {
       off: "gpt-5-6-sol-none",
+      minimal: null,
       low: "gpt-5-6-sol-low",
       medium: "gpt-5-6-sol-medium",
       high: "gpt-5-6-sol-high",
@@ -178,9 +189,18 @@ export const FALLBACK_MODELS: ProviderModelConfig[] = [
     maxTokens: 128_000,
   },
   {
-    id: "swe-1-7",
+    id: "swe-1.7",
     name: "SWE-1.7",
     reasoning: true,
+    thinkingLevelMap: {
+      off: null,
+      minimal: null,
+      low: null,
+      medium: "swe-1-7-medium",
+      high: "swe-1-7",
+      xhigh: null,
+      max: null,
+    },
     input: ["text", "image"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 262_000,

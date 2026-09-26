@@ -20,5 +20,7 @@ src/context-map.ts    # Pi Context → Cognition chat history
 
 - `/login devin` must call `devin auth login` when credentials are missing, not a custom Windsurf paste flow.
 - Model IDs must come from `devin models list`, not a hardcoded cloud allowlist.
+- For families with multiple thinking levels, use the family slug as the Pi model id and map each supported level to its catalog variant UID.
+- Unsupported thinking levels must be `null` in `thinkingLevelMap`, not absent, so Pi hides them instead of falling back.
 - Do not depend on Zed or ACP. Pi keeps tools, permissions, and the session tree.
 - Package must stay installable as a Pi package: `keywords: ["pi-package"]` and `pi.extensions`.

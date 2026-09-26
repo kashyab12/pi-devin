@@ -44,6 +44,49 @@ test("applies later instruction, section, and tool changes", () => {
   });
 });
 
+test("keeps the newest signed thinking block and drops unsigned thinking", () => {
+  const assistant = (content, timestamp) => ({
+    role: "assistant",
+    content,
+    api: "devin-local",
+    provider: "devin",
+    model: "test-model",
+    usage: {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp,
+  });
+  const context = normalizeContext({
+    messages: [
+      assistant([
+        { type: "thinking", thinking: "First summary", thinkingSignature: "sealed.v1.first" },
+        { type: "thinking", thinking: "Unsigned summary" },
+        { type: "thinking", thinking: "Newest signed summary", thinkingSignature: "provider-specific\u001fopaque-second", redacted: true },
+        { type: "thinking", thinking: "Newest but unsigned" },
+        { type: "text", text: "Answer" },
+      ], 1),
+      assistant([{ type: "thinking", thinking: "Unsigned only" }], 2),
+    ],
+  });
+
+  assert.deepEqual(mapContextToChat(context).messages, [
+    {
+      role: "assistant",
+      content: "Answer",
+      tool_calls: undefined,
+      thinking: {
+        text: "Newest signed summary",
+        signature: "opaque-second",
+        signatureType: "provider-specific",
+        redacted: true,
+      },
+    },
+    { role: "assistant", content: "", tool_calls: undefined, thinking: undefined },
+  ]);
+});
+
 test("accepts an empty transcript", () => {
   assert.deepEqual(mapContextToChat(normalizeContext({ messages: [] })), {
     systemPrompt: undefined,

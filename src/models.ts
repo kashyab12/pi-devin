@@ -186,6 +186,38 @@ export const FALLBACK_MODELS: ProviderModelConfig[] = [
     contextWindow: 262_000,
     maxTokens: 128_000,
   },
+  // SWE-2 — appended last; existing entries are unchanged and unreordered.
+  //
+  // Provenance (AGENTS.md contract: model IDs come from `devin models list`,
+  // not a hardcoded cloud allowlist): this entry is an offline fallback
+  // snapshot whose model UIDs and limits were copied verbatim from the live
+  // Devin CLI `devin models list --format json` output for the SWE-2 family
+  // (captured 2026-09-30, Devin CLI on this host). It is exactly the entry
+  // `familyToModels` produces for that family when the CLI catalog is
+  // reachable, kept here so cold/offline starts still know the real CLI
+  // model IDs (`swe-2-high` default; `max` maps to `swe-2-max`).
+  //
+  // It is NOT a cloud allowlist entry and is not refreshed automatically:
+  // `loadCliCatalog`/`refreshCatalog` still replace the whole fallback with
+  // the live CLI catalog whenever credentials exist and the CLI answers.
+  // Only fields the CLI reported are asserted: cost_tier "Free" maps to
+  // zeroed cost (the CLI reports no price); no unsupported thinking levels
+  // are claimed. If the CLI changes the family, update this entry from a
+  // fresh `devin models list` capture.
+  {
+    id: "swe-2-high",
+    name: "SWE-2",
+    reasoning: true,
+    thinkingLevelMap: {
+      medium: "swe-2-medium",
+      high: "swe-2-high",
+      max: "swe-2-max",
+    },
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 262_000,
+    maxTokens: 128_000,
+  },
 ];
 
 export function modelsFromCatalog(catalog: DevinCatalog | null): ProviderModelConfig[] {

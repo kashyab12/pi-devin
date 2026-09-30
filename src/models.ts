@@ -30,14 +30,16 @@ const THINKING_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max
 function parseCost(summary?: string): ProviderModelConfig["cost"] {
   const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   if (!summary) return empty;
-  const input = summary.match(/\$([0-9.]+)\s*\/\s*MTok In/i);
-  const output = summary.match(/\$([0-9.]+)\s*\/\s*MTok Out/i);
+  const unit = String.raw`(?:1\s*M|M\s*Tok)`;
+  const input = summary.match(new RegExp(String.raw`\$([0-9.]+)\s*\/\s*${unit}\s*(?:Input|In)\b`, "i"));
+  const output = summary.match(new RegExp(String.raw`\$([0-9.]+)\s*\/\s*${unit}\s*(?:Output|Out)\b`, "i"));
+  const cachedInput = summary.match(new RegExp(String.raw`\$([0-9.]+)\s*\/\s*${unit}\s*Cached\s+Input\b`, "i"));
   const inCost = input ? Number(input[1]) : 0;
   const outCost = output ? Number(output[1]) : 0;
   return {
     input: inCost,
     output: outCost,
-    cacheRead: Number((inCost * 0.1).toFixed(4)),
+    cacheRead: cachedInput ? Number(cachedInput[1]) : Number((inCost * 0.1).toFixed(4)),
     cacheWrite: Number((inCost * 1.25).toFixed(4)),
   };
 }

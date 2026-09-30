@@ -93,11 +93,17 @@ function preferredDefault(map: ThinkingLevelMap): string | undefined {
 }
 
 function familyToModels(family: DevinFamily): ProviderModelConfig[] {
-  const usable = family.variants.filter((variant) => {
+  // "adaptive" is a Devin CLI router and "fusion-*" UIDs are CLI-side
+  // orchestrator compositions (primary + sidekick), not GetChatMessage model
+  // UIDs. The raw API rejects both with "no API providers are available".
+  const supported = family.variants.filter(
+    (variant) => variant.model_uid !== "adaptive" && !variant.model_uid.startsWith("fusion-"),
+  );
+  const usable = supported.filter((variant) => {
     const key = variantKey(variant.model_uid);
     return !key || (!key.includes("priority") && !key.includes("fast") && key !== "thinking-1m");
   });
-  const source = usable.length > 0 ? usable : family.variants;
+  const source = usable.length > 0 ? usable : supported;
   const thinkingLevelMap: ThinkingLevelMap = {};
   for (const variant of source) {
     const level = thinkingFromSuffix(variantKey(variant.model_uid));

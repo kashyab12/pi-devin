@@ -70,6 +70,15 @@ Commands:
 
 - `/devin-status` — CLI path, version, auth
 - `/devin-refresh` — reload `devin models list --format json`
+- `/devin-usage` — show account daily/weekly quota, reset times, plan status, and your on-demand usage
+
+### Account usage
+
+Run `/devin-usage` to fetch billing information using your existing CLI login. It only runs on demand, makes no model requests, and does not poll in the background. Results appear as a UI notification, outside the model context and session history. Quota percentages show consumption, not remaining allowance; reset times use your local timezone. These are account quotas, not token usage or a cost estimate for the current Pi session.
+
+This command sends the CLI Bearer credential only to the fixed `https://app.devin.ai` origin. It discovers your current organization through `/api/users/current-membership`, then reads `/billing/quota/usage`, `/billing/status`, and `/billing/quota/my-on-demand-usage` under that organization's `/api/<org-id>` path. It ignores configured alternative webapp hosts, rejects redirects, caps response sizes, and times out after 20 seconds. Membership personal data and raw responses are not displayed or persisted. `PI_OFFLINE=1` blocks the lookup.
+
+These are undocumented portal APIs and may change or be unavailable for some credentials, plans, or permissions. Partial failures leave available sections visible. Positive on-demand amounts are labeled as raw API amounts because their unit has not been verified; they are not presented as currency.
 
 The model catalog is cached for six hours in `$XDG_CACHE_HOME/pi-devin/models.json` (or `~/.cache/pi-devin/models.json`). A fresh cache avoids the CLI call at startup; an older cache remains available while it refreshes in the background. Set `PI_OFFLINE=1` to skip automatic catalog refreshes. `/devin-refresh` still requests a refresh explicitly.
 

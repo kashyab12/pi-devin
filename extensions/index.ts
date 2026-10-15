@@ -2,6 +2,7 @@ import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-codin
 import type { Api, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { authStatus, loginWithCli, readCredentials } from "../src/credentials.js";
 import { whichDevin, devinVersion } from "../src/cli.js";
+import { formatBillingUsage, loadBillingUsage } from "../src/billing.js";
 import {
   type CachedDevinCatalog,
   isUsableCatalog,
@@ -136,6 +137,35 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         ].join("\n"),
         status.loggedIn && bin ? "info" : "warning",
       );
+    },
+  });
+
+  let billingPending = false;
+  pi.registerCommand("devin-usage", {
+    description: "Show Devin account quota and on-demand usage (read-only)",
+    handler: async (_args, ctx) => {
+      if (isOffline()) {
+        ctx.ui.notify("Devin usage is unavailable in offline mode.", "warning");
+        return;
+      }
+      if (billingPending) {
+        ctx.ui.notify("Devin usage request is already running.", "info");
+        return;
+      }
+      billingPending = true;
+      try {
+        const credentials = readCredentials();
+        if (!credentials) {
+          ctx.ui.notify("Not signed in. Run /login devin first.", "warning");
+          return;
+        }
+        const usage = await loadBillingUsage(credentials.apiKey);
+        ctx.ui.notify(formatBillingUsage(usage), usage.warnings.length ? "warning" : "info");
+      } catch {
+        ctx.ui.notify("Devin usage could not be loaded. Check CLI login and network access.", "error");
+      } finally {
+        billingPending = false;
+      }
     },
   });
 
